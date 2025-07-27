@@ -1,4 +1,4 @@
-﻿{
+{
   "name": "imposter-game-server",
   "version": "1.0.0",
   "main": "dist/server.js",

@@ -1,0 +1,69 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Room {
+  id          String   @id @default(cuid())
+  code        String   @unique @db.VarChar(6)
+  name        String?  @db.VarChar(50)
+  isPublic    Boolean  @default(false)
+  maxPlayers  Int      @default(10)
+  themeMode   Boolean  @default(false)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  players     Player[]
+  games       Game[]
+
+  @@map("rooms")
+}
+
+model Player {
+  id          String   @id @default(cuid())
+  name        String   @db.VarChar(30)
+  roomId      String
+  socketId    String?  @unique
+  isHost      Boolean  @default(false)
+  isOnline    Boolean  @default(true)
+  joinedAt    DateTime @default(now())
+  lastSeen    DateTime @default(now())
+
+  room        Room     @relation(fields: [roomId], references: [id], onDelete: Cascade)
+
+  @@map("players")
+}
+
+model Game {
+  id              String      @id @default(cuid())
+  roomId          String
+  currentWord     String?     @db.VarChar(100)
+  wordGiverId     String?
+  imposterId      String?
+  state           GameState   @default(WAITING)
+  roundNumber     Int         @default(1)
+  wordGiverQueue  String[]
+  votes           Json?
+  winner          String?
+  createdAt       DateTime    @default(now())
+  completedAt     DateTime?
+  timeLimit       Int?
+
+  room            Room        @relation(fields: [roomId], references: [id], onDelete: Cascade)
+
+  @@map("games")
+}
+
+enum GameState {
+  WAITING
+  WORD_SUBMISSION
+  DISCUSSION
+  VOTING
+  RESULTS
+  COMPLETED
+}
