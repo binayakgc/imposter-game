@@ -5,7 +5,6 @@ import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
-import { Server } from 'socket.io';
 import { createServer } from 'http';
 
 // Internal imports
@@ -13,6 +12,8 @@ import { env, getAllowedOrigins, getServerConfig, getRateLimitConfig } from './c
 import { connectDatabase } from './config/database';
 import { logger, request as logRequest } from './utils/logger';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler';
+// Initialize Socket.io server with full implementation
+import { initializeSocketIO } from './sockets';
 
 // Route imports
 import healthRoutes from './routes/health';
@@ -33,14 +34,7 @@ const HTTP_STATUS = {
 const app = express();
 const server = createServer(app);
 
-// Create Socket.io server (we'll configure this later)
-const io = new Server(server, {
-  cors: {
-    origin: getAllowedOrigins(),
-    methods: ['GET', 'POST'],
-    credentials: true,
-  },
-});
+const io = initializeSocketIO(server);
 
 // Security middleware
 app.use(helmet({
