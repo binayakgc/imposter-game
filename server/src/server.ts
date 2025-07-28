@@ -7,6 +7,7 @@ import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import { createServer } from 'http';
 
+
 // Internal imports
 import { env, getAllowedOrigins, getServerConfig, getRateLimitConfig } from './config/environment';
 import { connectDatabase } from './config/database';
@@ -17,6 +18,8 @@ import { initializeSocketIO } from './sockets';
 
 // Route imports
 import healthRoutes from './routes/health';
+import roomRoutes from './routes/rooms';
+import gameRoutes from './routes/games';
 
 // Use local constants instead of importing from shared
 const HTTP_STATUS = {
@@ -82,6 +85,8 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 
 // API Routes
 app.use('/api/health', healthRoutes);
+app.use('/api/rooms', roomRoutes);
+app.use('/api/games', gameRoutes);
 
 // Root endpoint
 app.get('/', (req: Request, res: Response) => {
