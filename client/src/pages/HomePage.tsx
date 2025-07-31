@@ -1,5 +1,5 @@
 // client/src/pages/HomePage.tsx
-// Enhanced home page with public room lobby and Socket.io connection
+// Complete home page with public room lobby and Socket.io connection
 
 import React, { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
@@ -14,6 +14,11 @@ interface PublicRoom {
   themeMode: boolean;
   createdAt: string;
   isActive: boolean;
+  players?: Array<{
+    id: string;
+    name: string;
+    isHost: boolean;
+  }>;
 }
 
 const HomePage: React.FC = () => {
@@ -28,88 +33,196 @@ const HomePage: React.FC = () => {
   const [joiningRoom, setJoiningRoom] = useState(false);
 
   useEffect(() => {
+    console.log('🏠 HomePage component mounted');
+    
     // Test backend health
-    const testBackendHealth = async () => {
-      try {
-        const response = await fetch('http://localhost:3001/api/health');
-        if (response.ok) {
-          setServerStatus('healthy');
-        } else {
-          setServerStatus('error');
-        }
-      } catch (error) {
-        console.error('Backend health check failed:', error);
-        setServerStatus('error');
-      }
-    };
-
-    // Connect to Socket.io server
-    const connectToServer = async () => {
-      try {
-        setConnectionStatus('connecting');
-        await socketService.connect('http://localhost:3001');
-        
-        // Set up connection status listeners
-        socketService.on('connected', () => {
-          console.log('✅ Connected to game server');
-          setConnectionStatus('connected');
-        });
-
-        socketService.on('disconnected', () => {
-          console.log('❌ Disconnected from game server');
-          setConnectionStatus('disconnected');
-        });
-
-        socketService.on('error', (error) => {
-          console.error('🚨 Socket error:', error);
-          setConnectionStatus('disconnected');
-        });
-
-        // Check if already connected
-        if (socketService.isConnected()) {
-          setConnectionStatus('connected');
-        }
-
-      } catch (error) {
-        console.error('Failed to connect to server:', error);
-        setConnectionStatus('disconnected');
-      }
-    };
-
-    // Load public rooms
-    const loadPublicRooms = async () => {
-      setLoadingRooms(true);
-      try {
-        const response = await fetch('http://localhost:3001/api/rooms/public');
-        if (response.ok) {
-          const result = await response.json();
-          setPublicRooms(result.rooms || []);
-        } else {
-          console.error('Failed to load public rooms');
-        }
-      } catch (error) {
-        console.error('Error loading public rooms:', error);
-      } finally {
-        setLoadingRooms(false);
-      }
-    };
-
-    // Run initial setup
     testBackendHealth();
+    
+    // Connect to Socket.io server
     connectToServer();
-    loadPublicRooms();
 
-    // Set up interval to refresh public rooms every 10 seconds
+    // Set up interval to refresh public rooms every 30 seconds
     const roomRefreshInterval = setInterval(() => {
-      loadPublicRooms();
-    }, 10000);
+      if (socketService.isConnected()) {
+        console.log('🔄 Auto-refreshing public rooms...');
+        loadPublicRooms();
+      }
+    }, 30000);
 
     // Cleanup on unmount
     return () => {
+      console.log('🧹 HomePage component unmounting, cleaning up...');
       clearInterval(roomRefreshInterval);
-      socketService.disconnect();
+      
+      // Clean up socket listeners
+      socketService.off('connected');
+      socketService.off('disconnected');
+      socketService.off('error');
+      
+      // Clean up the public rooms updated listener
+      if ((socketService as any).socket) {
+        (socketService as any).socket.off('public_rooms_updated');
+      }
     };
   }, []);
+
+  const testBackendHealth = async () => {
+    console.log('🏥 Testing backend health...');
+    try {
+      const response = await fetch('http://localhost:3001/api/health');
+      if (response.ok) {
+        setServerStatus('healthy');
+        console.log('✅ Backend health check passed');
+      } else {
+        setServerStatus('error');
+        console.log('❌ Backend health check failed');
+      }
+    } catch (error) {
+      console.error('❌ Backend health check failed:', error);
+      setServerStatus('error');
+    }
+  };
+
+  const connectToServer = async () => {
+    console.log('🔌 Connecting to Socket.io server...');
+    try {
+      setConnectionStatus('connecting');
+      await socketService.connect('http://localhost:3001');
+      
+      // Set up connection status listeners
+      socketService.on('connected', () => {
+        console.log('✅ Connected to game server');
+        setConnectionStatus('connected');
+        loadPublicRooms(); // Load rooms when connected
+      });
+
+      socketService.on('disconnected', () => {
+        console.log('❌ Disconnected from game server');
+        setConnectionStatus('disconnected');
+      });
+
+      socketService.on('error', (error) => {
+        console.error('🚨 Socket error:', error);
+        setConnectionStatus('disconnected');
+      });
+
+      // 🔧 CRITICAL: Listen for public room updates using direct socket access
+      if ((socketService as any).socket) {
+        (socketService as any).socket.on('public_rooms_updated', () => {
+          console.log('📢 Received public_rooms_updated event, refreshing...');
+          if (socketService.isConnected()) {
+            loadPublicRooms();
+          }
+        });
+      }
+
+      // Check if already connected
+      if (socketService.isConnected()) {
+        setConnectionStatus('connected');
+        loadPublicRooms();
+      }
+
+    } catch (error) {
+      console.error('❌ Failed to connect to server:', error);
+      setConnectionStatus('disconnected');
+    }
+  };
+
+  const loadPublicRooms = async () => {
+    console.log('📋 Loading public rooms...');
+    
+    if (socketService.isConnected()) {
+      // Try Socket.io first
+      await loadPublicRoomsViaSocket();
+    } else {
+      // Fallback to REST API
+      await loadPublicRoomsViaREST();
+    }
+  };
+
+  const loadPublicRoomsViaSocket = async () => {
+    console.log('📡 Loading public rooms via Socket.io...');
+    setLoadingRooms(true);
+    
+    try {
+      const result = await new Promise<any>((resolve, reject) => {
+        const handlePublicRooms = (data: any) => {
+          console.log('📊 Received public rooms data:', data);
+          // Clean up listeners
+          if ((socketService as any).socket) {
+            (socketService as any).socket.off('public_rooms', handlePublicRooms);
+            (socketService as any).socket.off('error', handleError);
+          }
+          
+          if (data.success) {
+            resolve(data);
+          } else {
+            reject(new Error(data.message || 'Failed to load rooms'));
+          }
+        };
+
+        const handleError = (error: any) => {
+          console.error('❌ Socket error while loading rooms:', error);
+          // Clean up listeners
+          if ((socketService as any).socket) {
+            (socketService as any).socket.off('public_rooms', handlePublicRooms);
+            (socketService as any).socket.off('error', handleError);
+          }
+          reject(new Error(error.message || 'Connection error'));
+        };
+
+        // Set up listeners using the socket directly
+        if ((socketService as any).socket) {
+          (socketService as any).socket.on('public_rooms', handlePublicRooms);
+          (socketService as any).socket.on('error', handleError);
+        }
+        
+        // Emit request using existing method
+        socketService.getPublicRooms();
+
+        // Timeout after 5 seconds
+        setTimeout(() => {
+          if ((socketService as any).socket) {
+            (socketService as any).socket.off('public_rooms', handlePublicRooms);
+            (socketService as any).socket.off('error', handleError);
+          }
+          reject(new Error('Request timed out'));
+        }, 5000);
+      });
+
+      setPublicRooms(result.rooms || []);
+      console.log(`✅ Loaded ${result.rooms?.length || 0} public rooms via Socket.io`);
+      
+    } catch (error) {
+      console.error('❌ Error loading via socket:', error);
+      // Fallback to REST API
+      await loadPublicRoomsViaREST();
+    } finally {
+      setLoadingRooms(false);
+    }
+  };
+
+  const loadPublicRoomsViaREST = async () => {
+    console.log('🌐 Loading public rooms via REST API...');
+    setLoadingRooms(true);
+    
+    try {
+      const response = await fetch('http://localhost:3001/api/rooms/public');
+      if (response.ok) {
+        const result = await response.json();
+        setPublicRooms(result.rooms || []);
+        console.log(`✅ Loaded ${result.rooms?.length || 0} public rooms via REST`);
+      } else {
+        console.error('❌ Failed to load public rooms via REST');
+        setPublicRooms([]);
+      }
+    } catch (error) {
+      console.error('❌ Error loading via REST:', error);
+      setPublicRooms([]);
+    } finally {
+      setLoadingRooms(false);
+    }
+  };
 
   const getConnectionStatusColor = () => {
     switch (connectionStatus) {
@@ -128,6 +241,7 @@ const HomePage: React.FC = () => {
   };
 
   const testSocketConnection = () => {
+    console.log('🧪 Testing socket connection...');
     if (socketService.isConnected()) {
       console.log('✅ Socket connection test successful');
       alert('Socket.io connection is working! Check console for details.');
@@ -137,151 +251,154 @@ const HomePage: React.FC = () => {
     }
   };
 
+  const formatTimeAgo = (dateString: string) => {
+    const now = new Date();
+    const created = new Date(dateString);
+    const diffMs = now.getTime() - created.getTime();
+    const diffMins = Math.floor(diffMs / 60000);
+    
+    if (diffMins < 1) return 'Just now';
+    if (diffMins < 60) return `${diffMins}m ago`;
+    const diffHours = Math.floor(diffMins / 60);
+    if (diffHours < 24) return `${diffHours}h ago`;
+    return `${Math.floor(diffHours / 24)}d ago`;
+  };
+
   const handleJoinPublicRoom = (room: PublicRoom) => {
+    console.log('🎯 Attempting to join public room:', room.code);
+    
+    if (room.playerCount >= room.maxPlayers) {
+      alert('This room is full!');
+      return;
+    }
     setSelectedRoom(room);
     setShowJoinModal(true);
   };
 
   const handleQuickJoin = async () => {
-    if (!selectedRoom || !playerName.trim()) {
+    if (!playerName.trim()) {
+      alert('Please enter your name');
       return;
     }
 
-    if (connectionStatus !== 'connected') {
-      alert('Please wait for server connection');
-      return;
-    }
+    if (!selectedRoom) return;
 
+    console.log(`🚀 Quick joining room ${selectedRoom.code} as ${playerName}`);
     setJoiningRoom(true);
-
+    
     try {
-      // Check if room is still available
-      const response = await fetch(`http://localhost:3001/api/rooms/${selectedRoom.code}`);
-      const result = await response.json();
-
-      if (!response.ok) {
-        alert('Room no longer exists');
-        setShowJoinModal(false);
-        setJoiningRoom(false);
-        return;
-      }
-
-      const room = result.room;
-      
-      if (room.playerCount >= room.maxPlayers) {
-        alert('Room is now full');
-        setShowJoinModal(false);
-        setJoiningRoom(false);
-        return;
-      }
-
-      // Join room via Socket.io
-      const handleRoomJoined = (data: any) => {
-        console.log('✅ Room joined successfully:', data);
-        if (data.success) {
-          navigate(`/room/${selectedRoom.code}`);
-        } else {
-          alert(data.message || 'Failed to join room');
-        }
-        setJoiningRoom(false);
-        setShowJoinModal(false);
-        socketService.off('room_joined', handleRoomJoined);
-      };
-
-      socketService.on('room_joined', handleRoomJoined);
-      socketService.joinRoom(selectedRoom.code, playerName);
-
-      // Timeout after 10 seconds
-      setTimeout(() => {
-        if (joiningRoom) {
-          alert('Join request timed out');
-          setJoiningRoom(false);
-          setShowJoinModal(false);
+      // Join room using existing socket event structure
+      const result = await new Promise<any>((resolve, reject) => {
+        const handleRoomJoined = (data: any) => {
+          console.log('✅ Room joined successfully:', data);
           socketService.off('room_joined', handleRoomJoined);
-        }
-      }, 10000);
+          socketService.off('error', handleError);
+          if (data.success) {
+            resolve(data);
+          } else {
+            reject(new Error(data.message || 'Failed to join room'));
+          }
+        };
 
-    } catch (error) {
-      console.error('❌ Error joining room:', error);
-      alert('Network error. Please try again.');
+        const handleError = (error: any) => {
+          console.error('❌ Error joining room:', error);
+          socketService.off('room_joined', handleRoomJoined);
+          socketService.off('error', handleError);
+          reject(new Error(error.message || 'Connection error'));
+        };
+
+        socketService.on('room_joined', handleRoomJoined);
+        socketService.on('error', handleError);
+
+        // Emit join room event using existing structure
+        socketService.emit('join_room', {
+          roomCode: selectedRoom.code,
+          playerName: playerName.trim()
+        });
+
+        setTimeout(() => {
+          socketService.off('room_joined', handleRoomJoined);
+          socketService.off('error', handleError);
+          reject(new Error('Request timed out'));
+        }, 10000);
+      });
+
+      // Success - navigate to room using existing route structure
+      console.log(`🎉 Successfully joined room, navigating to /room/${selectedRoom.code}`);
+      navigate(`/room/${selectedRoom.code}`);
+      
+    } catch (error: any) {
+      console.error('❌ Failed to join room:', error);
+      alert(`Failed to join room: ${error.message}`);
+    } finally {
       setJoiningRoom(false);
       setShowJoinModal(false);
+      setPlayerName('');
+      setSelectedRoom(null);
     }
-  };
-
-  const formatTimeAgo = (dateString: string) => {
-    const now = new Date();
-    const created = new Date(dateString);
-    const diffInMinutes = Math.floor((now.getTime() - created.getTime()) / (1000 * 60));
-    
-    if (diffInMinutes < 1) return 'Just now';
-    if (diffInMinutes === 1) return '1 minute ago';
-    if (diffInMinutes < 60) return `${diffInMinutes} minutes ago`;
-    
-    const diffInHours = Math.floor(diffInMinutes / 60);
-    if (diffInHours === 1) return '1 hour ago';
-    if (diffInHours < 24) return `${diffInHours} hours ago`;
-    
-    return 'More than a day ago';
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center p-4 bg-gradient-to-br from-game-bg via-slate-900 to-game-surface">
-      {/* Background decoration */}
-      <div className="absolute inset-0 overflow-hidden">
-        <div className="absolute -top-40 -left-40 w-80 h-80 bg-primary-500/20 rounded-full blur-3xl"></div>
-        <div className="absolute -bottom-40 -right-40 w-80 h-80 bg-game-accent/20 rounded-full blur-3xl"></div>
-        <div className="absolute top-1/4 right-1/4 w-60 h-60 bg-purple-500/10 rounded-full blur-3xl"></div>
+    <div className="min-h-screen bg-gradient-to-br from-game-dark via-game-primary to-game-secondary relative overflow-hidden">
+      {/* Background Effects */}
+      <div className="absolute inset-0">
+        <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-primary-500/10 rounded-full blur-3xl animate-pulse"></div>
+        <div className="absolute bottom-1/4 right-1/4 w-96 h-96 bg-game-accent/10 rounded-full blur-3xl animate-pulse delay-1000"></div>
+        <div className="absolute top-3/4 left-1/2 w-64 h-64 bg-secondary-500/10 rounded-full blur-3xl animate-pulse delay-2000"></div>
       </div>
 
-      <div className="relative max-w-4xl w-full animate-fade-in">
-        {/* Game Title */}
+      <div className="relative z-10 container mx-auto px-4 py-8">
+        {/* Header */}
         <div className="text-center mb-12">
-          <h1 className="text-6xl font-bold text-white mb-4 animate-bounce-gentle">
+          <h1 className="text-6xl font-bold bg-gradient-to-r from-primary-400 via-game-accent to-secondary-400 bg-clip-text text-transparent mb-4">
             🕵️ Imposter
           </h1>
-          <p className="text-2xl text-gray-300 font-game mb-2">
-            The Ultimate Word Guessing Game
+          <p className="text-xl text-gray-300 mb-6">
+            Multiplayer Word Game - Find the Imposter Among You!
           </p>
-          <p className="text-lg text-gray-400">
-            Find the imposter or guess the word to win!
-          </p>
-        </div>
-
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-          {/* Left Column - Main Actions */}
-          <div className="space-y-6">
-            {/* Connection Status */}
-            <div className="bg-white/5 backdrop-blur-xl rounded-2xl p-4 shadow-2xl border border-white/10">
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-sm text-gray-400">Server Status:</span>
-                <span className={`text-sm font-semibold ${serverStatus === 'healthy' ? 'text-green-400' : serverStatus === 'error' ? 'text-red-400' : 'text-yellow-400'}`}>
-                  {serverStatus === 'healthy' ? '🟢 Online' : serverStatus === 'error' ? '🔴 Offline' : '🟡 Checking...'}
-                </span>
-              </div>
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-sm text-gray-400">Connection:</span>
-                <span className={`text-sm font-semibold ${getConnectionStatusColor()}`}>
-                  {getConnectionStatusText()}
-                </span>
-              </div>
-              <button 
-                onClick={testSocketConnection}
-                className="w-full mt-2 bg-gray-700 hover:bg-gray-600 text-white text-xs py-2 px-3 rounded transition-colors"
-              >
-                Test Connection
-              </button>
+          
+          {/* Enhanced Connection Status */}
+          <div className="inline-flex items-center gap-4 px-6 py-3 bg-white/5 backdrop-blur-xl rounded-full border border-white/10">
+            <div className="flex items-center gap-2">
+              <div className={`w-3 h-3 rounded-full ${connectionStatus === 'connected' ? 'bg-green-400 animate-pulse' : connectionStatus === 'connecting' ? 'bg-yellow-400 animate-pulse' : 'bg-red-400'}`}></div>
+              <span className={`text-sm ${getConnectionStatusColor()}`}>
+                {getConnectionStatusText()}
+              </span>
+            </div>
+            
+            <div className="h-4 w-px bg-white/20"></div>
+            
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-gray-400">Server:</span>
+              <span className={`text-sm ${serverStatus === 'healthy' ? 'text-green-400' : 'text-red-400'}`}>
+                {serverStatus === 'healthy' ? '✅ Online' : '❌ Offline'}
+              </span>
             </div>
 
-            {/* Game Options Card */}
+            {/* Connection test button */}
+            <button
+              onClick={testSocketConnection}
+              className="text-xs px-3 py-1 bg-primary-600 hover:bg-primary-700 text-white rounded-lg transition-colors"
+            >
+              Test
+            </button>
+          </div>
+        </div>
+
+        <div className="grid lg:grid-cols-3 gap-8 max-w-7xl mx-auto">
+          
+          {/* Left Column - Game Actions */}
+          <div className="lg:col-span-1">
             <div className="bg-white/5 backdrop-blur-xl rounded-3xl p-8 shadow-2xl border border-white/10">
-              <div className="space-y-4">
-                {/* Create Room Button */}
-                <Link 
-                  to="/create" 
-                  className={`w-full font-bold py-4 px-6 rounded-2xl transition-all duration-200 hover:scale-105 hover:shadow-lg flex items-center justify-center space-x-3 group ${
-                    connectionStatus === 'connected' 
-                      ? 'bg-gradient-to-r from-primary-600 to-primary-700 hover:from-primary-700 hover:to-primary-800 text-white shadow-primary-500/30'
+              <h2 className="text-2xl font-bold text-white mb-8 text-center">Game Actions</h2>
+              
+              {/* Create Room */}
+              <div className="space-y-6">
+                <Link
+                  to="/create"
+                  className={`group block w-full p-6 rounded-2xl transition-all duration-200 transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-primary-500 ${
+                    connectionStatus === 'connected'
+                      ? 'bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700 text-white shadow-green-500/30'
                       : 'bg-gray-600 text-gray-400 cursor-not-allowed'
                   }`}
                   onClick={(e) => {
@@ -291,42 +408,78 @@ const HomePage: React.FC = () => {
                     }
                   }}
                 >
-                  <span className="text-2xl">🎮</span>
-                  <span className="text-lg">Create New Room</span>
-                  <span className="group-hover:translate-x-1 transition-transform">→</span>
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <span className="text-2xl">🎮</span>
+                      <span className="text-lg font-semibold ml-3">Create New Room</span>
+                    </div>
+                    <span className="group-hover:translate-x-1 transition-transform">→</span>
+                  </div>
                 </Link>
 
-                {/* Join Room Button */}
-                <Link 
-                  to="/join" 
-                  className={`w-full font-bold py-4 px-6 rounded-2xl transition-all duration-200 hover:scale-105 hover:shadow-lg flex items-center justify-center space-x-3 group ${
-                    connectionStatus === 'connected' 
+                {/* Join by Code */}
+                <Link
+                  to="/join"
+                  className={`group block w-full p-6 rounded-2xl transition-all duration-200 transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-primary-500 ${
+                    connectionStatus === 'connected'
+                      ? 'bg-gradient-to-r from-primary-600 to-blue-600 hover:from-primary-700 hover:to-blue-700 text-white shadow-primary-500/30'
+                      : 'bg-gray-600 text-gray-400 cursor-not-allowed'
+                  }`}
+                  onClick={(e) => {
+                    if (connectionStatus !== 'connected') {
+                      e.preventDefault();
+                      alert('Please wait for server connection');
+                    }
+                  }}
+                >
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <span className="text-2xl">🔐</span>
+                      <span className="text-lg font-semibold ml-3">Join with Code</span>
+                    </div>
+                    <span className="group-hover:translate-x-1 transition-transform">→</span>
+                  </div>
+                </Link>
+
+                {/* Quick Join */}
+                <button
+                  onClick={() => {
+                    const availableRoom = publicRooms.find(room => room.playerCount < room.maxPlayers);
+                    if (availableRoom) {
+                      handleJoinPublicRoom(availableRoom);
+                    } else {
+                      alert('No available public rooms found. Create a new room or join by code!');
+                    }
+                  }}
+                  disabled={connectionStatus !== 'connected' || publicRooms.length === 0}
+                  className={`group w-full p-6 rounded-2xl transition-all duration-200 transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-game-accent ${
+                    connectionStatus === 'connected' && publicRooms.length > 0
                       ? 'bg-gradient-to-r from-game-accent to-red-600 hover:from-red-600 hover:to-red-700 text-white shadow-red-500/30'
                       : 'bg-gray-600 text-gray-400 cursor-not-allowed'
                   }`}
-                  onClick={(e) => {
-                    if (connectionStatus !== 'connected') {
-                      e.preventDefault();
-                      alert('Please wait for server connection');
-                    }
-                  }}
                 >
-                  <span className="text-2xl">🔐</span>
-                  <span className="text-lg">Join with Code</span>
-                  <span className="group-hover:translate-x-1 transition-transform">→</span>
-                </Link>
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <span className="text-2xl">⚡</span>
+                      <span className="text-lg font-semibold ml-3">Quick Join</span>
+                    </div>
+                    <span className="group-hover:translate-x-1 transition-transform">→</span>
+                  </div>
+                </button>
               </div>
 
               {/* Game Stats */}
               <div className="mt-8 pt-6 border-t border-white/20">
                 <div className="grid grid-cols-2 gap-4 text-center">
                   <div className="bg-white/10 p-4 rounded-xl">
-                    <div className="text-2xl font-bold text-primary-400">4-10</div>
-                    <div className="text-xs text-gray-400">Players</div>
+                    <div className="text-2xl font-bold text-primary-400">{publicRooms.length}</div>
+                    <div className="text-xs text-gray-400">Public Rooms</div>
                   </div>
                   <div className="bg-white/10 p-4 rounded-xl">
-                    <div className="text-2xl font-bold text-game-accent">5-10</div>
-                    <div className="text-xs text-gray-400">Minutes</div>
+                    <div className="text-2xl font-bold text-game-accent">
+                      {publicRooms.reduce((acc, room) => acc + (room.maxPlayers - room.playerCount), 0)}
+                    </div>
+                    <div className="text-xs text-gray-400">Open Slots</div>
                   </div>
                 </div>
               </div>
@@ -334,20 +487,36 @@ const HomePage: React.FC = () => {
           </div>
 
           {/* Right Column - Public Room Lobby */}
-          <div className="space-y-4">
+          <div className="lg:col-span-2">
             <div className="bg-white/5 backdrop-blur-xl rounded-3xl p-6 shadow-2xl border border-white/10">
               <div className="flex items-center justify-between mb-6">
                 <h2 className="text-2xl font-bold text-white flex items-center space-x-2">
                   <span>🌐</span>
                   <span>Public Rooms</span>
                 </h2>
-                <div className="text-sm text-gray-400">
-                  {loadingRooms ? 'Refreshing...' : `${publicRooms.length} rooms`}
+                <div className="flex items-center gap-4">
+                  <div className="text-sm text-gray-400">
+                    {loadingRooms ? 'Refreshing...' : `${publicRooms.length} rooms`}
+                  </div>
+                  <button
+                    onClick={loadPublicRooms}
+                    disabled={loadingRooms}
+                    className="px-4 py-2 bg-white/10 hover:bg-white/20 disabled:bg-white/5 text-white text-sm rounded-lg transition-all duration-200 focus:outline-none"
+                  >
+                    {loadingRooms ? (
+                      <span className="flex items-center gap-2">
+                        <div className="w-3 h-3 border border-white/30 border-t-white rounded-full animate-spin"></div>
+                        Refreshing...
+                      </span>
+                    ) : (
+                      '🔄 Refresh'
+                    )}
+                  </button>
                 </div>
               </div>
 
               <div className="space-y-3 max-h-96 overflow-y-auto hide-scrollbar">
-                {loadingRooms ? (
+                {loadingRooms && publicRooms.length === 0 ? (
                   <div className="text-center py-8">
                     <div className="w-8 h-8 border-2 border-primary-500 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
                     <p className="text-gray-400">Loading rooms...</p>
@@ -386,11 +555,30 @@ const HomePage: React.FC = () => {
                               <span>⏰</span>
                               <span>{formatTimeAgo(room.createdAt)}</span>
                             </span>
+                            {room.players && room.players.length > 0 && (
+                              <span className="flex items-center space-x-1">
+                                <span>👑</span>
+                                <span>{room.players.find(p => p.isHost)?.name || 'Host'}</span>
+                              </span>
+                            )}
                           </div>
                         </div>
                         <div className="flex items-center space-x-2">
-                          <div className={`w-3 h-3 rounded-full ${room.playerCount >= room.maxPlayers ? 'bg-red-400' : 'bg-green-400'}`}></div>
-                          <span className="text-2xl">→</span>
+                          <div className={`w-3 h-3 rounded-full ${room.playerCount >= room.maxPlayers ? 'bg-red-400' : 'bg-green-400'} animate-pulse`}></div>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleJoinPublicRoom(room);
+                            }}
+                            disabled={room.playerCount >= room.maxPlayers}
+                            className={`px-4 py-2 rounded-lg font-semibold text-sm transition-all duration-200 ${
+                              room.playerCount >= room.maxPlayers
+                                ? 'bg-gray-600 text-gray-400 cursor-not-allowed'
+                                : 'bg-gradient-to-r from-primary-600 to-blue-600 hover:from-primary-700 hover:to-blue-700 text-white transform hover:scale-105'
+                            }`}
+                          >
+                            {room.playerCount >= room.maxPlayers ? 'Full' : 'Join'}
+                          </button>
                         </div>
                       </div>
                     </div>
@@ -398,58 +586,33 @@ const HomePage: React.FC = () => {
                 )}
               </div>
 
-              {publicRooms.length > 0 && (
-                <div className="mt-4 pt-4 border-t border-white/20">
-                  <p className="text-xs text-gray-400 text-center">
-                    Click any room to join instantly • Updates every 10 seconds
-                  </p>
+              {/* Lobby Footer */}
+              <div className="mt-6 p-4 bg-white/5 rounded-lg border border-white/10">
+                <div className="flex items-center justify-between text-sm">
+                  <span className="text-gray-400">
+                    💡 Public rooms are open to everyone - no code needed!
+                  </span>
+                  <span className="text-gray-500">
+                    Auto-refresh: 30s | Real-time updates enabled
+                  </span>
                 </div>
-              )}
+              </div>
             </div>
           </div>
-        </div>
-
-        {/* How to Play */}
-        <div className="mt-8 text-center">
-          <button 
-            className="text-gray-400 hover:text-white text-sm underline transition-colors"
-            onClick={() => {
-              // TODO: Open how to play modal
-              alert('How to play guide coming soon!');
-            }}
-          >
-            How to Play? 🤔
-          </button>
-        </div>
-
-        {/* Footer */}
-        <div className="mt-8 text-center text-xs text-gray-500">
-          <p>Version 1.0 • Built with ❤️</p>
-          <p className="mt-1">
-            Backend: {serverStatus === 'healthy' ? '✅' : '❌'} | 
-            Socket: {connectionStatus === 'connected' ? '✅' : '❌'}
-          </p>
         </div>
       </div>
 
       {/* Join Room Modal */}
       {showJoinModal && selectedRoom && (
-        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
-          <div className="bg-white/10 backdrop-blur-xl rounded-3xl p-8 max-w-md w-full border border-white/20">
-            <h3 className="text-2xl font-bold text-white mb-4 text-center">
-              Join "{selectedRoom.name || `Room ${selectedRoom.code}`}"
-            </h3>
-            
-            <div className="mb-6 p-4 bg-white/5 rounded-2xl">
-              <div className="grid grid-cols-2 gap-4 text-center text-sm">
-                <div>
-                  <div className="text-white font-semibold">Players</div>
-                  <div className="text-gray-400">{selectedRoom.playerCount}/{selectedRoom.maxPlayers}</div>
-                </div>
-                <div>
-                  <div className="text-white font-semibold">Mode</div>
-                  <div className="text-gray-400">{selectedRoom.themeMode ? 'Theme' : 'Custom'}</div>
-                </div>
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-game-surface/95 backdrop-blur-xl rounded-3xl p-8 max-w-md w-full border border-white/20 shadow-2xl">
+            <div className="text-center mb-6">
+              <h3 className="text-2xl font-bold text-white mb-2">Join Room</h3>
+              <div className="text-lg text-gray-300 mb-1">
+                {selectedRoom.name || `Room ${selectedRoom.code}`}
+              </div>
+              <div className="text-sm text-gray-400">
+                {selectedRoom.playerCount}/{selectedRoom.maxPlayers} players • {selectedRoom.themeMode ? 'Theme' : 'Custom'}
               </div>
             </div>
 
@@ -466,7 +629,11 @@ const HomePage: React.FC = () => {
               
               <div className="flex space-x-3">
                 <button
-                  onClick={() => setShowJoinModal(false)}
+                  onClick={() => {
+                    setShowJoinModal(false);
+                    setPlayerName('');
+                    setSelectedRoom(null);
+                  }}
                   className="flex-1 bg-gray-600 hover:bg-gray-700 text-white py-3 px-4 rounded-xl font-semibold transition-colors"
                   disabled={joiningRoom}
                 >

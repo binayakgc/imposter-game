@@ -1,5 +1,5 @@
 // client/src/pages/GameRoom.tsx
-// Enhanced game room lobby with proper public/private logic
+// Complete game room lobby with real-time updates and proper connection handling
 
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
@@ -31,30 +31,133 @@ const GameRoom: React.FC = () => {
   
   const [room, setRoom] = useState<Room | null>(null);
   const [players, setPlayers] = useState<Player[]>([]);
+  const [currentPlayer, setCurrentPlayer] = useState<Player | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isConnected, setIsConnected] = useState(false);
-  const [currentPlayer, setCurrentPlayer] = useState<Player | null>(null);
+  const [connectionStatus, setConnectionStatus] = useState<'connecting' | 'connected' | 'disconnected'>('connecting');
 
   useEffect(() => {
-    // Check connection status
-    setIsConnected(socketService.isConnected());
+    console.log(`🎮 GameRoom component mounted for room: ${roomCode}`);
     
-    // Load room data
+    // Set up socket connection and event listeners
+    setupSocketConnection();
+    
+    // Load initial room data
     loadRoomData();
-    
-    // Set up socket listeners
-    setupSocketListeners();
-    
+
+    // Cleanup on unmount
     return () => {
-      // Clean up socket listeners
-      socketService.off('room_updated');
-      socketService.off('player_joined');
-      socketService.off('player_left');
-      socketService.off('connected');
-      socketService.off('disconnected');
+      console.log('🧹 GameRoom component unmounting, cleaning up...');
+      cleanupSocketListeners();
     };
   }, [roomCode]);
+
+  const setupSocketConnection = () => {
+    console.log('🔌 Setting up socket connection...');
+    
+    // Monitor connection status
+    const updateConnectionStatus = () => {
+      const connected = socketService.isConnected();
+      setIsConnected(connected);
+      setConnectionStatus(connected ? 'connected' : 'disconnected');
+      console.log(`📡 Connection status: ${connected ? 'connected' : 'disconnected'}`);
+    };
+
+    // Set up connection listeners
+    socketService.on('connected', () => {
+      console.log('✅ Socket connected in GameRoom');
+      updateConnectionStatus();
+    });
+
+    socketService.on('disconnected', () => {
+      console.log('❌ Socket disconnected in GameRoom');
+      updateConnectionStatus();
+    });
+
+    socketService.on('error', (error) => {
+      console.error('🚨 Socket error in GameRoom:', error);
+      setError(error.message || 'Connection error');
+    });
+
+    // 🔧 CRITICAL: Room update listeners
+    socketService.on('room_updated', (data) => {
+      console.log('📊 Room updated:', data);
+      if (data.room) {
+        setRoom(data.room);
+      }
+      if (data.players) {
+        setPlayers(data.players);
+        console.log(`👥 Updated player list: ${data.players.length} players`);
+        data.players.forEach(p => console.log(`  - ${p.name} (${p.isHost ? 'Host' : 'Player'}) - ${p.isOnline ? 'Online' : 'Offline'}`));
+      }
+    });
+
+    // 🔧 CRITICAL: Player joined listener
+    socketService.on('player_joined', (data) => {
+      console.log('👋 Player joined:', data.player);
+      // The room_updated event will handle the full update
+    });
+
+    // 🔧 CRITICAL: Player left listener
+    socketService.on('player_left', (data) => {
+      console.log('👋 Player left:', data);
+      // The room_updated event will handle the full update
+    });
+
+    // 🔧 CRITICAL: Host changed listener
+    socketService.on('host_changed', (data) => {
+      console.log('👑 Host changed:', data);
+      setError(null); // Clear any errors
+      // Show notification
+      alert(data.message || `${data.newHost.name} is now the host`);
+    });
+
+    // 🔧 CRITICAL: Room joined listener (for this client)
+    socketService.on('room_joined', (data) => {
+      console.log('🚪 Successfully joined room:', data);
+      if (data.success) {
+        setRoom(data.room);
+        setPlayers(data.players || []);
+        setCurrentPlayer(data.player);
+        setIsLoading(false);
+        setError(null);
+      }
+    });
+
+    // 🔧 CRITICAL: Room left listener (for this client)
+    socketService.on('room_left', (data) => {
+      console.log('🚪 Left room:', data);
+      if (data.success) {
+        navigate('/');
+      }
+    });
+
+    // Initialize connection
+    updateConnectionStatus();
+    if (!socketService.isConnected()) {
+      console.log('🔌 Socket not connected, attempting to connect...');
+      setConnectionStatus('connecting');
+      socketService.connect('http://localhost:3001').catch(err => {
+        console.error('❌ Failed to connect:', err);
+        setConnectionStatus('disconnected');
+        setError('Failed to connect to server');
+      });
+    }
+  };
+
+  const cleanupSocketListeners = () => {
+    console.log('🧹 Cleaning up socket listeners...');
+    socketService.off('connected');
+    socketService.off('disconnected');
+    socketService.off('error');
+    socketService.off('room_updated');
+    socketService.off('player_joined');
+    socketService.off('player_left');
+    socketService.off('host_changed');
+    socketService.off('room_joined');
+    socketService.off('room_left');
+  };
 
   const loadRoomData = async () => {
     if (!roomCode) {
@@ -63,116 +166,108 @@ const GameRoom: React.FC = () => {
       return;
     }
 
-    try {
-      const response = await fetch(`http://localhost:3001/api/rooms/${roomCode}`);
-      const result = await response.json();
+    console.log(`📋 Loading room data for: ${roomCode}`);
 
-      if (response.ok && result.success) {
-        setRoom(result.room);
-        setPlayers(result.players || []);
-        // Find current player (assuming we can identify them somehow)
-        // For now, we'll assume the first player or host
-        const host = result.players?.find((p: Player) => p.isHost);
-        setCurrentPlayer(host || result.players?.[0] || null);
-        setError(null);
+    try {
+      // Try to get room details via REST API first (fallback)
+      const response = await fetch(`http://localhost:3001/api/rooms/${roomCode}`);
+      
+      if (response.ok) {
+        const result = await response.json();
+        console.log('📊 Room data loaded via REST:', result);
+        
+        if (result.success) {
+          setRoom(result.room);
+          setPlayers(result.players || []);
+        } else {
+          setError(result.error || 'Room not found');
+        }
+      } else if (response.status === 404) {
+        setError('Room not found');
       } else {
-        setError(result.message || 'Room not found');
+        setError('Failed to load room data');
       }
     } catch (error) {
-      console.error('❌ Error loading room:', error);
-      setError('Failed to load room data');
+      console.error('❌ Error loading room data:', error);
+      setError('Failed to connect to server');
     } finally {
       setIsLoading(false);
     }
   };
 
-  const setupSocketListeners = () => {
-    // Connection status
-    socketService.on('connected', () => setIsConnected(true));
-    socketService.on('disconnected', () => setIsConnected(false));
-    
-    // Room events
-    socketService.on('room_updated', (data) => {
-      console.log('Room updated:', data);
-      setRoom(data.room);
-      setPlayers(data.players || []);
-    });
-
-    socketService.on('player_joined', (data) => {
-      console.log('Player joined:', data);
-      setPlayers(prev => [...prev, data.player]);
-      if (room) {
-        setRoom({ ...room, playerCount: room.playerCount + 1 });
-      }
-    });
-
-    socketService.on('player_left', (data) => {
-      console.log('Player left:', data);
-      setPlayers(prev => prev.filter(p => p.id !== data.playerId));
-      if (room) {
-        setRoom({ ...room, playerCount: Math.max(0, room.playerCount - 1) });
-      }
-    });
-  };
-
-  const handleLeaveRoom = () => {
-    if (room) {
-      socketService.leaveRoom(room.id);
+  const handleLeaveRoom = async () => {
+    if (!room || !socketService.isConnected()) {
+      navigate('/');
+      return;
     }
-    navigate('/');
+
+    console.log(`🚪 Leaving room: ${room.id}`);
+    
+    try {
+      // Emit leave room event
+      socketService.emit('leave_room', { roomId: room.id });
+      
+      // Don't wait for response, just navigate
+      setTimeout(() => {
+        navigate('/');
+      }, 1000);
+      
+    } catch (error) {
+      console.error('❌ Error leaving room:', error);
+      // Navigate anyway
+      navigate('/');
+    }
   };
 
   const handleStartGame = () => {
-    if (room && players.length >= 4) {
-      socketService.startGame(room.id);
+    if (!room) return;
+    
+    if (players.length < 4) {
+      alert('Need at least 4 players to start the game');
+      return;
     }
+
+    console.log('🎮 Starting game...');
+    socketService.emit('start_game', { roomId: room.id });
   };
 
-  const copyRoomCode = () => {
-    if (roomCode) {
-      navigator.clipboard.writeText(roomCode);
-      // Create a temporary success message
-      const button = document.getElementById('copy-button');
-      if (button) {
-        const originalText = button.textContent;
-        button.textContent = 'Copied!';
-        setTimeout(() => {
-          button.textContent = originalText;
-        }, 2000);
-      }
-    }
+  const formatTimeAgo = (dateString: string) => {
+    const now = new Date();
+    const joined = new Date(dateString);
+    const diffMs = now.getTime() - joined.getTime();
+    const diffMins = Math.floor(diffMs / 60000);
+    
+    if (diffMins < 1) return 'Just now';
+    if (diffMins < 60) return `${diffMins}m ago`;
+    const diffHours = Math.floor(diffMins / 60);
+    return `${diffHours}h ago`;
   };
 
-  const copyRoomLink = () => {
-    const link = `${window.location.origin}/join/${roomCode}`;
-    navigator.clipboard.writeText(link);
-    // Create a temporary success message
-    alert('Room link copied to clipboard!');
-  };
-
+  // Show loading state
   if (isLoading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-game-bg via-slate-900 to-game-surface">
+      <div className="min-h-screen bg-gradient-to-br from-game-dark via-game-primary to-game-secondary flex items-center justify-center">
         <div className="text-center">
           <div className="w-16 h-16 border-4 border-primary-500 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
-          <p className="text-white">Loading room...</p>
+          <p className="text-white text-xl">Loading room...</p>
         </div>
       </div>
     );
   }
 
+  // Show error state
   if (error || !room) {
     return (
-      <div className="min-h-screen flex items-center justify-center p-4 bg-gradient-to-br from-game-bg via-slate-900 to-game-surface">
-        <div className="text-center">
-          <div className="text-6xl mb-4">😞</div>
-          <h1 className="text-2xl font-bold text-white mb-4">Room Not Found</h1>
-          <p className="text-gray-400 mb-8">{error}</p>
+      <div className="min-h-screen bg-gradient-to-br from-game-dark via-game-primary to-game-secondary flex items-center justify-center p-4">
+        <div className="text-center max-w-md">
+          <div className="text-6xl mb-4">😵</div>
+          <h1 className="text-2xl font-bold text-white mb-4">Room Error</h1>
+          <p className="text-gray-300 mb-6">{error || 'Room not found'}</p>
           <button
             onClick={() => navigate('/')}
-            className="bg-primary-600 hover:bg-primary-700 text-white font-bold py-3 px-6 rounded-xl transition-colors"
+            className="bg-primary-600 hover:bg-primary-700 text-white px-6 py-3 rounded-lg font-semibold transition-colors"
           >
-            Go Home
+            Back to Home
           </button>
         </div>
       </div>
@@ -180,31 +275,35 @@ const GameRoom: React.FC = () => {
   }
 
   const isHost = currentPlayer?.isHost || false;
-  const canStartGame = players.length >= 4 && players.length <= room.maxPlayers;
+  const canStartGame = isHost && players.length >= 4;
 
   return (
-    <div className="min-h-screen p-4 bg-gradient-to-br from-game-bg via-slate-900 to-game-surface">
-      {/* Background decoration */}
-      <div className="absolute inset-0 overflow-hidden">
-        <div className="absolute -top-40 -left-40 w-80 h-80 bg-primary-500/20 rounded-full blur-3xl"></div>
-        <div className="absolute -bottom-40 -right-40 w-80 h-80 bg-game-accent/20 rounded-full blur-3xl"></div>
+    <div className="min-h-screen bg-gradient-to-br from-game-dark via-game-primary to-game-secondary relative overflow-hidden">
+      {/* Background Effects */}
+      <div className="absolute inset-0">
+        <div className="absolute top-1/4 left-1/4 w-64 h-64 bg-primary-500/20 rounded-full blur-3xl animate-pulse"></div>
+        <div className="absolute bottom-1/4 right-1/4 w-64 h-64 bg-game-accent/20 rounded-full blur-3xl animate-pulse delay-1000"></div>
       </div>
 
-      <div className="relative max-w-4xl mx-auto">
+      <div className="relative z-10 container mx-auto px-4 py-8">
         {/* Header */}
         <div className="flex items-center justify-between mb-8">
           <button
             onClick={handleLeaveRoom}
-            className="text-gray-400 hover:text-white transition-colors flex items-center space-x-2 hover:scale-105 transition-transform"
+            className="flex items-center gap-2 text-gray-400 hover:text-white transition-colors"
           >
-            <span className="text-xl">←</span>
-            <span className="font-medium">Leave Room</span>
+            ← Leave Room
           </button>
           
           <div className={`px-4 py-2 rounded-full text-sm font-semibold ${
-            isConnected ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'
+            connectionStatus === 'connected' 
+              ? 'bg-green-500/20 text-green-400' 
+              : connectionStatus === 'connecting'
+              ? 'bg-yellow-500/20 text-yellow-400'
+              : 'bg-red-500/20 text-red-400'
           }`}>
-            {isConnected ? '🟢 Connected' : '🔴 Disconnected'}
+            {connectionStatus === 'connected' ? '🟢 Connected' : 
+             connectionStatus === 'connecting' ? '🟡 Connecting...' : '🔴 Disconnected'}
           </div>
         </div>
 
@@ -237,118 +336,132 @@ const GameRoom: React.FC = () => {
             
             {/* Room Code Section - Different for Public vs Private */}
             {room.isPublic ? (
-              <div className="bg-green-500/10 border border-green-500/30 rounded-2xl p-4 mt-4">
-                <div className="text-center">
-                  <p className="text-green-300 font-semibold mb-2">✨ Public Room</p>
-                  <p className="text-sm text-gray-300">
-                    This room is visible to everyone in the lobby
-                  </p>
-                  <p className="text-xs text-gray-400 mt-1">
-                    Players can join directly without needing a code
-                  </p>
-                </div>
+              <div className="bg-green-500/10 border border-green-500/30 rounded-xl p-4 mb-6">
+                <p className="text-green-300 text-sm mb-1">✨ Public Room</p>
+                <p className="text-gray-300 text-sm">
+                  This room is visible to everyone in the lobby<br/>
+                  Players can join directly without needing a code
+                </p>
               </div>
             ) : (
-              <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-2xl p-4 mt-4">
-                <div className="text-center mb-4">
-                  <p className="text-yellow-300 font-semibold mb-2">🔐 Private Room</p>
-                  <p className="text-sm text-gray-300 mb-3">
-                    Share this code with friends to let them join
-                  </p>
-                </div>
-                
-                <div className="flex items-center justify-center space-x-3">
+              <div className="bg-white/10 rounded-xl p-4 mb-6">
+                <p className="text-gray-300 text-sm mb-2">Share this code with friends:</p>
+                <div className="flex items-center justify-center gap-4">
+                  <div className="bg-game-surface/50 px-6 py-3 rounded-lg border border-white/20">
+                    <span className="text-2xl font-mono font-bold text-white tracking-wider">
+                      {room.code}
+                    </span>
+                  </div>
                   <button
-                    id="copy-button"
-                    onClick={copyRoomCode}
-                    className="bg-white/10 hover:bg-white/20 border border-white/20 text-white px-6 py-3 rounded-xl font-mono text-xl tracking-widest transition-all duration-200 hover:scale-105"
-                  >
-                    {roomCode}
-                  </button>
-                  <button
-                    onClick={copyRoomLink}
-                    className="bg-yellow-600 hover:bg-yellow-700 text-white px-4 py-3 rounded-xl text-sm font-semibold transition-colors"
+                    onClick={() => {
+                      navigator.clipboard.writeText(`${window.location.origin}/join/${room.code}`);
+                      alert('Room link copied to clipboard!');
+                    }}
+                    className="bg-primary-600 hover:bg-primary-700 text-white px-4 py-2 rounded-lg text-sm font-semibold transition-colors"
                   >
                     Copy Link
                   </button>
                 </div>
               </div>
             )}
-          </div>
 
-          {/* Room Stats */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-center">
-            <div className="bg-white/10 p-4 rounded-xl">
-              <div className="text-2xl font-bold text-primary-400">{players.length}</div>
-              <div className="text-xs text-gray-400">Players</div>
-            </div>
-            <div className="bg-white/10 p-4 rounded-xl">
-              <div className="text-2xl font-bold text-game-accent">{room.maxPlayers}</div>
-              <div className="text-xs text-gray-400">Max</div>
-            </div>
-            <div className="bg-white/10 p-4 rounded-xl">
-              <div className="text-2xl font-bold text-game-success">
-                {room.isPublic ? 'Public' : 'Private'}
+            {/* Room Stats */}
+            <div className="grid grid-cols-4 gap-4 mb-6">
+              <div className="bg-white/10 p-4 rounded-xl">
+                <div className="text-2xl font-bold text-primary-400">{players.length}</div>
+                <div className="text-xs text-gray-400">Players</div>
               </div>
-              <div className="text-xs text-gray-400">Visibility</div>
-            </div>
-            <div className="bg-white/10 p-4 rounded-xl">
-              <div className="text-2xl font-bold text-purple-400">
-                {room.themeMode ? 'Theme' : 'Custom'}
+              <div className="bg-white/10 p-4 rounded-xl">
+                <div className="text-2xl font-bold text-game-accent">{room.maxPlayers}</div>
+                <div className="text-xs text-gray-400">Max</div>
               </div>
-              <div className="text-xs text-gray-400">Mode</div>
+              <div className="bg-white/10 p-4 rounded-xl">
+                <div className="text-lg font-bold text-green-400">
+                  {room.isPublic ? 'Public' : 'Private'}
+                </div>
+                <div className="text-xs text-gray-400">Visibility</div>
+              </div>
+              <div className="bg-white/10 p-4 rounded-xl">
+                <div className="text-lg font-bold text-purple-400">
+                  {room.themeMode ? 'Theme' : 'Custom'}
+                </div>
+                <div className="text-xs text-gray-400">Mode</div>
+              </div>
             </div>
           </div>
         </div>
 
-        {/* Players List */}
-        <div className="bg-white/5 backdrop-blur-xl rounded-3xl p-8 mb-8 shadow-2xl border border-white/10">
-          <h2 className="text-2xl font-bold text-white mb-6 text-center">
-            Players ({players.length}/{room.maxPlayers})
-          </h2>
-          
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {players.map((player) => (
+        {/* Players Section */}
+        <div className="bg-white/5 backdrop-blur-xl rounded-3xl p-8 shadow-2xl border border-white/10 mb-8">
+          <div className="flex items-center justify-between mb-6">
+            <h2 className="text-2xl font-bold text-white">
+              Players ({players.length}/{room.maxPlayers})
+            </h2>
+            
+            {isHost && (
+              <div className="flex items-center gap-2 text-sm text-yellow-400">
+                <span>👑</span>
+                <span>You are the host</span>
+              </div>
+            )}
+          </div>
+
+          {/* Player Grid */}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {players.map((player, index) => (
               <div
                 key={player.id}
-                className={`p-4 rounded-2xl border-2 transition-all duration-200 ${
-                  player.isHost 
-                    ? 'bg-primary-500/20 border-primary-500/50 shadow-primary-500/20' 
-                    : 'bg-white/10 border-white/20'
+                className={`p-4 rounded-xl border transition-all duration-200 ${
+                  player.isOnline
+                    ? player.isHost
+                      ? 'bg-yellow-500/20 border-yellow-500/40 shadow-yellow-500/20'
+                      : 'bg-blue-500/20 border-blue-500/40 shadow-blue-500/20'
+                    : 'bg-gray-500/20 border-gray-500/40'
+                } ${
+                  currentPlayer?.id === player.id ? 'ring-2 ring-primary-500' : ''
                 }`}
               >
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center space-x-3">
-                    <div className={`w-4 h-4 rounded-full ${
-                      player.isOnline ? 'bg-green-400' : 'bg-gray-400'
-                    }`}></div>
-                    <span className="text-white font-semibold">{player.name}</span>
+                <div className="flex items-center gap-3">
+                  <div className={`w-12 h-12 rounded-full flex items-center justify-center text-xl ${
+                    player.isOnline 
+                      ? player.isHost ? 'bg-yellow-500' : 'bg-blue-500'
+                      : 'bg-gray-500'
+                  }`}>
+                    {player.isHost ? '👑' : '👤'}
                   </div>
-                  <div className="flex items-center space-x-2">
-                    {player.isHost && (
-                      <span className="bg-primary-600 text-white px-3 py-1 rounded-full text-xs font-semibold">
-                        Host
-                      </span>
-                    )}
-                    <span className="text-2xl">
-                      {player.isHost ? '👑' : '👤'}
-                    </span>
+                  
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2">
+                      <h3 className="font-semibold text-white">{player.name}</h3>
+                      {currentPlayer?.id === player.id && (
+                        <span className="text-xs bg-primary-500/20 text-primary-400 px-2 py-1 rounded-full">
+                          You
+                        </span>
+                      )}
+                    </div>
+                    
+                    <div className="flex items-center gap-2 text-sm text-gray-400">
+                      <div className={`w-2 h-2 rounded-full ${
+                        player.isOnline ? 'bg-green-400' : 'bg-gray-400'
+                      }`}></div>
+                      <span>{player.isOnline ? 'Online' : 'Offline'}</span>
+                      <span>•</span>
+                      <span>Joined {formatTimeAgo(player.joinedAt)}</span>
+                    </div>
                   </div>
                 </div>
               </div>
             ))}
-            
+
             {/* Empty slots */}
-            {Array.from({ length: room.maxPlayers - players.length }).map((_, index) => (
+            {Array.from({ length: room.maxPlayers - players.length }, (_, index) => (
               <div
                 key={`empty-${index}`}
-                className="p-4 rounded-2xl border-2 border-dashed border-white/20 bg-white/5"
+                className="p-4 rounded-xl border-2 border-dashed border-gray-600 bg-gray-500/10 flex items-center justify-center"
               >
-                <div className="text-center text-gray-400">
+                <div className="text-center text-gray-500">
                   <div className="text-3xl mb-2">👤</div>
-                  <div className="text-sm">
-                    {room.isPublic ? 'Waiting for player...' : 'Share room code to invite'}
-                  </div>
+                  <p className="text-sm">Waiting for player...</p>
                 </div>
               </div>
             ))}
@@ -356,38 +469,53 @@ const GameRoom: React.FC = () => {
         </div>
 
         {/* Game Controls */}
-        <div className="bg-white/5 backdrop-blur-xl rounded-3xl p-8 text-center shadow-2xl border border-white/10">
-          {isHost ? (
-            <div>
-              <h3 className="text-xl font-bold text-white mb-4 flex items-center justify-center space-x-2">
-                <span>👑</span>
-                <span>Host Controls</span>
-              </h3>
+        {isHost && (
+          <div className="bg-white/5 backdrop-blur-xl rounded-3xl p-8 shadow-2xl border border-white/10">
+            <h2 className="text-xl font-bold text-white mb-4">Host Controls</h2>
+            
+            <div className="space-y-4">
+              {players.length < 4 && (
+                <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-xl p-4">
+                  <p className="text-yellow-300 text-sm">
+                    ⚠️ Need at least 4 players to start the game. Currently have {players.length}.
+                  </p>
+                </div>
+              )}
+
               <button
                 onClick={handleStartGame}
-                disabled={!canStartGame || !isConnected}
-                className={`text-lg px-8 py-4 rounded-2xl font-bold transition-all duration-200 ${
-                  !canStartGame || !isConnected
-                    ? 'bg-gray-600 text-gray-400 cursor-not-allowed opacity-50'
-                    : 'bg-gradient-to-r from-primary-600 to-primary-700 hover:from-primary-700 hover:to-primary-800 text-white hover:scale-105 hover:shadow-2xl shadow-primary-500/30'
+                disabled={!canStartGame || connectionStatus !== 'connected'}
+                className={`w-full py-4 px-6 rounded-xl font-bold text-lg transition-all duration-200 ${
+                  canStartGame && connectionStatus === 'connected'
+                    ? 'bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700 text-white transform hover:scale-105'
+                    : 'bg-gray-600 text-gray-400 cursor-not-allowed'
                 }`}
               >
-                {canStartGame ? '🚀 Start Game' : `Need ${4 - players.length} more players`}
+                {connectionStatus !== 'connected' ? (
+                  '🔌 Connecting...'
+                ) : players.length < 4 ? (
+                  `🎮 Need ${4 - players.length} more players`
+                ) : (
+                  '🚀 Start Game'
+                )}
               </button>
-              <p className="text-gray-400 text-sm mt-3">
-                Minimum 4 players required to start the game
+            </div>
+          </div>
+        )}
+
+        {!isHost && (
+          <div className="bg-white/5 backdrop-blur-xl rounded-3xl p-8 shadow-2xl border border-white/10 text-center">
+            <h2 className="text-xl font-bold text-white mb-4">Waiting for Host</h2>
+            <p className="text-gray-300">
+              {players.find(p => p.isHost)?.name || 'The host'} will start the game when ready.
+            </p>
+            {players.length < 4 && (
+              <p className="text-yellow-400 mt-2">
+                ⚠️ Need {4 - players.length} more players to start
               </p>
-            </div>
-          ) : (
-            <div>
-              <h3 className="text-xl font-bold text-white mb-4">Waiting for Host</h3>
-              <div className="flex items-center justify-center space-x-2 text-gray-400">
-                <div className="w-4 h-4 border-2 border-primary-500 border-t-transparent rounded-full animate-spin"></div>
-                <span>The host will start the game when ready</span>
-              </div>
-            </div>
-          )}
-        </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
