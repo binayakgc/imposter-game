@@ -1,48 +1,12 @@
 // server/src/middleware/errorHandler.ts
-// Professional error handling middleware (FIXED VERSION)
+// COMPLETE FIXED VERSION - Ensures AppError has all required properties
 
 import { Request, Response, NextFunction } from 'express';
-import { Prisma } from '@prisma/client';
-import { ZodError } from 'zod';
 import { logger } from '../utils/logger';
-import { isDevelopment } from '../config/environment';
 
-// Import shared constants with correct path
-const HTTP_STATUS = {
-  OK: 200,
-  CREATED: 201,
-  BAD_REQUEST: 400,
-  UNAUTHORIZED: 401,
-  FORBIDDEN: 403,
-  NOT_FOUND: 404,
-  CONFLICT: 409,
-  INTERNAL_SERVER_ERROR: 500,
-} as const;
-
-const ERROR_CODES = {
-  ROOM_NOT_FOUND: 'ROOM_NOT_FOUND',
-  ROOM_FULL: 'ROOM_FULL',
-  ROOM_INACTIVE: 'ROOM_INACTIVE',
-  INVALID_ROOM_CODE: 'INVALID_ROOM_CODE',
-  PLAYER_NOT_FOUND: 'PLAYER_NOT_FOUND',
-  PLAYER_NAME_TAKEN: 'PLAYER_NAME_TAKEN',
-  INVALID_PLAYER_NAME: 'INVALID_PLAYER_NAME',
-  PLAYER_NOT_IN_ROOM: 'PLAYER_NOT_IN_ROOM',
-  GAME_NOT_FOUND: 'GAME_NOT_FOUND',
-  GAME_NOT_STARTED: 'GAME_NOT_STARTED',
-  GAME_ALREADY_STARTED: 'GAME_ALREADY_STARTED',
-  NOT_ENOUGH_PLAYERS: 'NOT_ENOUGH_PLAYERS',
-  INVALID_GAME_STATE: 'INVALID_GAME_STATE',
-  WORD_ALREADY_SUBMITTED: 'WORD_ALREADY_SUBMITTED',
-  VOTE_ALREADY_SUBMITTED: 'VOTE_ALREADY_SUBMITTED',
-  NOT_WORD_GIVER: 'NOT_WORD_GIVER',
-  INVALID_VOTE_TARGET: 'INVALID_VOTE_TARGET',
-  VALIDATION_ERROR: 'VALIDATION_ERROR',
-  DATABASE_ERROR: 'DATABASE_ERROR',
-  INTERNAL_ERROR: 'INTERNAL_ERROR',
-} as const;
-
-// Custom error class
+/**
+ * Custom Application Error class
+ */
 export class AppError extends Error {
   public statusCode: number;
   public errorCode: string;
@@ -50,153 +14,245 @@ export class AppError extends Error {
 
   constructor(
     message: string,
-    statusCode: number = HTTP_STATUS.INTERNAL_SERVER_ERROR,
-    errorCode: string = ERROR_CODES.INTERNAL_ERROR,
+    statusCode: number = 500,
+    errorCode: string = 'INTERNAL_ERROR',
     isOperational: boolean = true
   ) {
     super(message);
+    
     this.statusCode = statusCode;
     this.errorCode = errorCode;
     this.isOperational = isOperational;
-
+    
+    // Maintain proper stack trace
     Error.captureStackTrace(this, this.constructor);
+    
+    // Set error name
+    this.name = this.constructor.name;
   }
 }
 
-// Error response interface
-interface ErrorResponse {
-  success: false;
-  error: string;
-  code: string;
-  timestamp: string;
-  path: string;
-  details?: any;
-}
-
-// Handle Prisma errors
-const handlePrismaError = (error: Prisma.PrismaClientKnownRequestError): AppError => {
-  switch (error.code) {
-    case 'P2002':
-      return new AppError(
-        'A record with this information already exists',
-        HTTP_STATUS.CONFLICT,
-        ERROR_CODES.VALIDATION_ERROR
-      );
-    case 'P2025':
-      return new AppError(
-        'Record not found',
-        HTTP_STATUS.NOT_FOUND,
-        ERROR_CODES.DATABASE_ERROR
-      );
-    case 'P2003':
-      return new AppError(
-        'Invalid reference to related record',
-        HTTP_STATUS.BAD_REQUEST,
-        ERROR_CODES.VALIDATION_ERROR
-      );
-    default:
-      return new AppError(
-        'Database operation failed',
-        HTTP_STATUS.INTERNAL_SERVER_ERROR,
-        ERROR_CODES.DATABASE_ERROR
-      );
-  }
-};
-
-// Handle Zod validation errors
-const handleZodError = (error: ZodError): AppError => {
-  const messages = error.issues.map(issue => `${issue.path.join('.')}: ${issue.message}`);
-  return new AppError(
-    `Validation failed: ${messages.join(', ')}`,
-    HTTP_STATUS.BAD_REQUEST,
-    ERROR_CODES.VALIDATION_ERROR
-  );
-};
-
-// Main error handling middleware
+/**
+ * Global error handler middleware
+ */
 export const errorHandler = (
-  error: Error,
+  error: Error | AppError,
   req: Request,
   res: Response,
   next: NextFunction
 ): void => {
-  let appError: AppError;
+  // Determine error properties
+  const statusCode = error instanceof AppError ? error.statusCode : 500;
+  const errorCode = error instanceof AppError ? error.errorCode : 'INTERNAL_ERROR';
+  const message = error.message || 'Unknown error occurred';
 
-  // Convert different error types to AppError
-  if (error instanceof AppError) {
-    appError = error;
-  } else if (error instanceof Prisma.PrismaClientKnownRequestError) {
-    appError = handlePrismaError(error);
-  } else if (error instanceof ZodError) {
-    appError = handleZodError(error);
-  } else if (error instanceof Prisma.PrismaClientValidationError) {
-    appError = new AppError(
-      'Invalid data provided',
-      HTTP_STATUS.BAD_REQUEST,
-      ERROR_CODES.VALIDATION_ERROR
-    );
-  } else {
-    // Unknown error
-    appError = new AppError(
-      isDevelopment() ? error.message : 'Something went wrong',
-      HTTP_STATUS.INTERNAL_SERVER_ERROR,
-      ERROR_CODES.INTERNAL_ERROR,
-      false
-    );
-  }
-
-  // Log error
-  logger.error('API Error', {
-    message: appError.message,
-    statusCode: appError.statusCode,
-    errorCode: appError.errorCode,
-    path: req.path,
+  // Log error details
+  logger.error('Global error handler triggered', {
+    message,
+    statusCode,
+    errorCode,
+    stack: error.stack,
+    url: req.originalUrl,
     method: req.method,
-    stack: isDevelopment() ? error.stack : undefined,
-    body: req.body,
-    params: req.params,
-    query: req.query,
+    ip: req.ip,
+    userAgent: req.get('User-Agent'),
+    userId: (req as any).user?.id,
+    timestamp: new Date().toISOString(),
   });
 
-  // Create error response
-  const errorResponse: ErrorResponse = {
-    success: false,
-    error: appError.message,
-    code: appError.errorCode,
-    timestamp: new Date().toISOString(),
-    path: req.path,
-  };
+  // Don't leak error details in production
+  const isDevelopment = process.env.NODE_ENV === 'development';
 
-  // Add error details in development
-  if (isDevelopment()) {
-    errorResponse.details = {
+  // Construct error response
+  const errorResponse = {
+    success: false,
+    error: error instanceof AppError 
+      ? message 
+      : (isDevelopment ? message : 'Internal server error'),
+    code: errorCode,
+    timestamp: new Date().toISOString(),
+    ...(isDevelopment && { 
       stack: error.stack,
-      originalError: error.message,
-    };
-  }
+      details: error instanceof AppError ? undefined : error.toString()
+    })
+  };
 
   // Send error response
-  res.status(appError.statusCode).json(errorResponse);
+  res.status(statusCode).json(errorResponse);
 };
 
-// 404 handler
-export const notFoundHandler = (req: Request, res: Response): void => {
-  const errorResponse: ErrorResponse = {
-    success: false,
-    error: `Route ${req.method} ${req.path} not found`,
-    code: ERROR_CODES.VALIDATION_ERROR,
+/**
+ * 404 Not Found handler
+ */
+export const notFoundHandler = (
+  req: Request,
+  res: Response,
+  next: NextFunction
+): void => {
+  const error = new AppError(
+    `Route ${req.originalUrl} not found`,
+    404,
+    'ROUTE_NOT_FOUND'
+  );
+
+  logger.warn('Route not found', {
+    url: req.originalUrl,
+    method: req.method,
+    ip: req.ip,
+    userAgent: req.get('User-Agent'),
     timestamp: new Date().toISOString(),
-    path: req.path,
-  };
+  });
 
-  res.status(HTTP_STATUS.NOT_FOUND).json(errorResponse);
+  res.status(404).json({
+    success: false,
+    error: error.message,
+    code: error.errorCode,
+    suggestion: 'Check the API documentation for available endpoints',
+    timestamp: new Date().toISOString(),
+  });
 };
 
-// Async error wrapper
-export const asyncHandler = (
-  fn: (req: Request, res: Response, next: NextFunction) => Promise<any>
-) => {
-  return (req: Request, res: Response, next: NextFunction): void => {
-    fn(req, res, next).catch(next);
+/**
+ * Async error wrapper for route handlers
+ */
+export const asyncHandler = (fn: Function) => {
+  return (req: Request, res: Response, next: NextFunction) => {
+    Promise.resolve(fn(req, res, next)).catch(next);
   };
+};
+
+/**
+ * Validation error helper
+ */
+export const createValidationError = (
+  message: string,
+  field?: string
+): AppError => {
+  return new AppError(
+    `Validation error: ${message}${field ? ` (field: ${field})` : ''}`,
+    400,
+    'VALIDATION_ERROR'
+  );
+};
+
+/**
+ * Database error helper
+ */
+export const createDatabaseError = (
+  operation: string,
+  originalError?: Error
+): AppError => {
+  logger.error('Database operation failed', {
+    operation,
+    error: originalError?.message,
+    stack: originalError?.stack,
+    timestamp: new Date().toISOString(),
+  });
+
+  return new AppError(
+    `Database operation failed: ${operation}`,
+    500,
+    'DATABASE_ERROR'
+  );
+};
+
+/**
+ * Authentication error helper
+ */
+export const createAuthError = (
+  message: string = 'Authentication required'
+): AppError => {
+  return new AppError(
+    message,
+    401,
+    'AUTHENTICATION_ERROR'
+  );
+};
+
+/**
+ * Authorization error helper
+ */
+export const createAuthorizationError = (
+  message: string = 'Insufficient permissions'
+): AppError => {
+  return new AppError(
+    message,
+    403,
+    'AUTHORIZATION_ERROR'
+  );
+};
+
+/**
+ * Rate limit error helper
+ */
+export const createRateLimitError = (
+  retryAfter?: number
+): AppError => {
+  const error = new AppError(
+    'Too many requests',
+    429,
+    'RATE_LIMIT_EXCEEDED'
+  );
+  
+  // Add retry-after info if provided
+  if (retryAfter) {
+    (error as any).retryAfter = retryAfter;
+  }
+  
+  return error;
+};
+
+/**
+ * Conflict error helper
+ */
+export const createConflictError = (
+  resource: string,
+  reason: string = 'already exists'
+): AppError => {
+  return new AppError(
+    `${resource} ${reason}`,
+    409,
+    'CONFLICT_ERROR'
+  );
+};
+
+/**
+ * Not found error helper
+ */
+export const createNotFoundError = (
+  resource: string = 'Resource'
+): AppError => {
+  return new AppError(
+    `${resource} not found`,
+    404,
+    'NOT_FOUND_ERROR'
+  );
+};
+
+/**
+ * Bad request error helper
+ */
+export const createBadRequestError = (
+  message: string = 'Bad request'
+): AppError => {
+  return new AppError(
+    message,
+    400,
+    'BAD_REQUEST_ERROR'
+  );
+};
+
+export default {
+  AppError,
+  errorHandler,
+  notFoundHandler,
+  asyncHandler,
+  createValidationError,
+  createDatabaseError,
+  createAuthError,
+  createAuthorizationError,
+  createRateLimitError,
+  createConflictError,
+  createNotFoundError,
+  createBadRequestError,
 };

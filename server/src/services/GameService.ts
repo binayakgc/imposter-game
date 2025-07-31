@@ -493,7 +493,7 @@ class GameServiceClass {
 
     const playersWithGameInfo = players.map(player => ({
       id: player.id,
-      name: player.name,
+      name: player.user.username,
       isHost: player.isHost,
       isOnline: player.isOnline,
       isImposter: player.id === game.imposterId,

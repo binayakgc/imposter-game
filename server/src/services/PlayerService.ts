@@ -1,16 +1,21 @@
 // server/src/services/PlayerService.ts
-// Player management service with CRUD operations
+// COMPLETE FIXED VERSION - Resolves all remaining TypeScript errors
 
 import { prisma } from '../config/database';
 import { logger } from '../utils/logger';
 import { AppError } from '../middleware/errorHandler';
 import { isValidPlayerName, sanitizeString } from '../utils/helpers';
 
-// Local constants
+// ✅ FIXED: Complete HTTP status constants
 const HTTP_STATUS = {
+  OK: 200,
+  CREATED: 201,
   BAD_REQUEST: 400,
+  UNAUTHORIZED: 401,
+  FORBIDDEN: 403,
   NOT_FOUND: 404,
   CONFLICT: 409,
+  INTERNAL_SERVER_ERROR: 500,  // ✅ FIXED: Added missing constant
 } as const;
 
 const ERROR_CODES = {
@@ -20,32 +25,38 @@ const ERROR_CODES = {
   ROOM_NOT_FOUND: 'ROOM_NOT_FOUND',
   ROOM_FULL: 'ROOM_FULL',
   VALIDATION_ERROR: 'VALIDATION_ERROR',
+  USER_NOT_FOUND: 'USER_NOT_FOUND',
 } as const;
 
-// Player service interfaces
+// Updated Player service interfaces to match User auth schema
 export interface CreatePlayerParams {
-  name: string;
+  userId: string;
   roomId: string;
   socketId?: string;
   isHost?: boolean;
 }
 
 export interface UpdatePlayerParams {
-  name?: string;
   socketId?: string;
   isOnline?: boolean;
   lastSeen?: Date;
 }
 
+// ✅ FIXED: Updated interface to match actual schema
 export interface PlayerWithRoom {
   id: string;
-  name: string;
+  userId: string;
   roomId: string;
   socketId: string | null;
   isHost: boolean;
   isOnline: boolean;
   joinedAt: Date;
   lastSeen: Date;
+  user: {
+    id: string;
+    username: string;
+    avatar?: string | null;
+  };
   room: {
     id: string;
     code: string;
@@ -61,18 +72,29 @@ class PlayerServiceClass {
    * Add a new player to a room
    */
   async addPlayer(params: CreatePlayerParams): Promise<PlayerWithRoom> {
-    const { name, roomId, socketId, isHost = false } = params;
+    const { userId, roomId, socketId, isHost = false } = params;
 
-    // Validate player name
-    if (!isValidPlayerName(name)) {
+    // ✅ FIXED: Verify user exists first
+    const user = await prisma.user.findUnique({
+      where: { id: userId }
+    });
+
+    if (!user) {
       throw new AppError(
-        'Player name must be between 2 and 20 characters',
+        'User not found',
+        HTTP_STATUS.NOT_FOUND,
+        ERROR_CODES.USER_NOT_FOUND
+      );
+    }
+
+    // Validate username (from user, not direct name)
+    if (!isValidPlayerName(user.username)) {
+      throw new AppError(
+        'Username must be between 2 and 20 characters',
         HTTP_STATUS.BAD_REQUEST,
         ERROR_CODES.INVALID_PLAYER_NAME
       );
     }
-
-    const sanitizedName = sanitizeString(name);
 
     // Check if room exists and get room info
     const room = await prisma.room.findUnique({
@@ -101,31 +123,41 @@ class PlayerServiceClass {
       );
     }
 
-    // Check if player name is already taken in this room
+    // ✅ FIXED: Check if user is already in this room (using userId + roomId unique constraint)
     const existingPlayer = await prisma.player.findFirst({
       where: {
+        userId,
         roomId,
-        name: sanitizedName,
       }
     });
 
     if (existingPlayer) {
       throw new AppError(
-        'Player name is already taken in this room',
+        'User is already in this room',
         HTTP_STATUS.CONFLICT,
         ERROR_CODES.PLAYER_NAME_TAKEN
       );
     }
 
     try {
+      // ✅ FIXED: Create player with correct fields
       const player = await prisma.player.create({
         data: {
-          name: sanitizedName,
+          userId,
           roomId,
           socketId,
           isHost,
+          isOnline: true,
+          lastSeen: new Date(),
         },
         include: {
+          user: {
+            select: {
+              id: true,
+              username: true,
+              avatar: true,
+            }
+          },
           room: {
             select: {
               id: true,
@@ -139,177 +171,45 @@ class PlayerServiceClass {
         }
       });
 
-      logger.gameEvent('Player added', roomId, player.id, {
-        playerName: sanitizedName,
-        isHost,
-        roomCode: room.code,
+      // ✅ FIXED: Log with correct structure
+      logger.info('Player added to room', {
+        playerId: player.id,
+        userId: player.userId,
+        username: player.user.username,
+        roomId: player.roomId,
+        roomCode: player.room.code,
       });
 
       return player;
+
     } catch (error) {
-      logger.error('Failed to add player', { error, params });
-      throw new AppError('Failed to add player to room');
+      logger.error('Failed to add player to room', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+        params,
+      });
+      throw new AppError(
+        'Failed to add player to room',
+        HTTP_STATUS.INTERNAL_SERVER_ERROR,
+        ERROR_CODES.VALIDATION_ERROR
+      );
     }
-  }
-
-  /**
-   * Get player by ID with room information
-   */
-  async getPlayerById(playerId: string): Promise<PlayerWithRoom | null> {
-    const player = await prisma.player.findUnique({
-      where: { id: playerId },
-      include: {
-        room: {
-          select: {
-            id: true,
-            code: true,
-            name: true,
-            isPublic: true,
-            maxPlayers: true,
-            themeMode: true,
-          }
-        }
-      }
-    });
-
-    return player;
-  }
-
-  /**
-   * Get player by socket ID
-   */
-  async getPlayerBySocketId(socketId: string): Promise<PlayerWithRoom | null> {
-    const player = await prisma.player.findUnique({
-      where: { socketId },
-      include: {
-        room: {
-          select: {
-            id: true,
-            code: true,
-            name: true,
-            isPublic: true,
-            maxPlayers: true,
-            themeMode: true,
-          }
-        }
-      }
-    });
-
-    return player;
   }
 
   /**
    * Get all players in a room
    */
   async getPlayersInRoom(roomId: string): Promise<PlayerWithRoom[]> {
-    const players = await prisma.player.findMany({
-      where: { roomId },
-      include: {
-        room: {
-          select: {
-            id: true,
-            code: true,
-            name: true,
-            isPublic: true,
-            maxPlayers: true,
-            themeMode: true,
-          }
-        }
-      },
-      orderBy: {
-        joinedAt: 'asc',
-      }
-    });
-
-    return players;
-  }
-
-  /**
-   * Get online players in a room
-   */
-  async getOnlinePlayersInRoom(roomId: string): Promise<PlayerWithRoom[]> {
-    const players = await prisma.player.findMany({
-      where: {
-        roomId,
-        isOnline: true,
-      },
-      include: {
-        room: {
-          select: {
-            id: true,
-            code: true,
-            name: true,
-            isPublic: true,
-            maxPlayers: true,
-            themeMode: true,
-          }
-        }
-      },
-      orderBy: {
-        joinedAt: 'asc',
-      }
-    });
-
-    return players;
-  }
-
-  /**
-   * Update player information
-   */
-  async updatePlayer(playerId: string, params: UpdatePlayerParams): Promise<PlayerWithRoom> {
-    const { name, socketId, isOnline, lastSeen } = params;
-
-    // Validate name if provided
-    if (name !== undefined && !isValidPlayerName(name)) {
-      throw new AppError(
-        'Player name must be between 2 and 20 characters',
-        HTTP_STATUS.BAD_REQUEST,
-        ERROR_CODES.INVALID_PLAYER_NAME
-      );
-    }
-
-    // Check if player exists
-    const existingPlayer = await this.getPlayerById(playerId);
-    if (!existingPlayer) {
-      throw new AppError(
-        'Player not found',
-        HTTP_STATUS.NOT_FOUND,
-        ERROR_CODES.PLAYER_NOT_FOUND
-      );
-    }
-
-    // Check for name conflicts if updating name
-    if (name !== undefined) {
-      const sanitizedName = sanitizeString(name);
-      const conflictingPlayer = await prisma.player.findFirst({
-        where: {
-          roomId: existingPlayer.roomId,
-          name: sanitizedName,
-          id: { not: playerId },
-        }
-      });
-
-      if (conflictingPlayer) {
-        throw new AppError(
-          'Player name is already taken in this room',
-          HTTP_STATUS.CONFLICT,
-          ERROR_CODES.PLAYER_NAME_TAKEN
-        );
-      }
-    }
-
     try {
-      const updatedPlayer = await prisma.player.update({
-        where: { id: playerId },
-        data: {
-          ...(name !== undefined && { name: sanitizeString(name) }),
-          ...(socketId !== undefined && { socketId }),
-          ...(isOnline !== undefined && { isOnline }),
-          ...(lastSeen !== undefined && { lastSeen }),
-          // Always update lastSeen when player is updated
-          ...(!lastSeen && { lastSeen: new Date() }),
-        },
+      const players = await prisma.player.findMany({
+        where: { roomId },
         include: {
+          user: {
+            select: {
+              id: true,
+              username: true,
+              avatar: true,
+            }
+          },
           room: {
             select: {
               id: true,
@@ -323,190 +223,604 @@ class PlayerServiceClass {
         }
       });
 
-      logger.gameEvent('Player updated', existingPlayer.roomId, playerId, params);
+      return players;
+    } catch (error) {
+      logger.error('Failed to get players in room', { 
+        error: error instanceof Error ? error.message : 'Unknown error', 
+        roomId 
+      });
+      throw new AppError(
+        'Failed to get players',
+        HTTP_STATUS.BAD_REQUEST,
+        ERROR_CODES.VALIDATION_ERROR
+      );
+    }
+  }
+
+  /**
+   * Get online players in a room
+   */
+  async getOnlinePlayersInRoom(roomId: string): Promise<PlayerWithRoom[]> {
+    try {
+      const players = await prisma.player.findMany({
+        where: { 
+          roomId,
+          isOnline: true 
+        },
+        include: {
+          user: {
+            select: {
+              id: true,
+              username: true,
+              avatar: true,
+            }
+          },
+          room: {
+            select: {
+              id: true,
+              code: true,
+              name: true,
+              isPublic: true,
+              maxPlayers: true,
+              themeMode: true,
+            }
+          }
+        }
+      });
+
+      return players;
+    } catch (error) {
+      logger.error('Failed to get online players in room', { 
+        error: error instanceof Error ? error.message : 'Unknown error', 
+        roomId 
+      });
+      throw new AppError(
+        'Failed to get online players',
+        HTTP_STATUS.BAD_REQUEST,
+        ERROR_CODES.VALIDATION_ERROR
+      );
+    }
+  }
+
+  /**
+   * Update player information
+   */
+  async updatePlayer(playerId: string, params: UpdatePlayerParams): Promise<PlayerWithRoom> {
+    try {
+      const updatedPlayer = await prisma.player.update({
+        where: { id: playerId },
+        data: params,
+        include: {
+          user: {
+            select: {
+              id: true,
+              username: true,
+              avatar: true,
+            }
+          },
+          room: {
+            select: {
+              id: true,
+              code: true,
+              name: true,
+              isPublic: true,
+              maxPlayers: true,
+              themeMode: true,
+            }
+          }
+        }
+      });
 
       return updatedPlayer;
     } catch (error) {
-      logger.error('Failed to update player', { error, playerId, params });
-      throw new AppError('Failed to update player');
+      logger.error('Failed to update player', { 
+        error: error instanceof Error ? error.message : 'Unknown error', 
+        playerId, 
+        params 
+      });
+      throw new AppError(
+        'Player not found',
+        HTTP_STATUS.NOT_FOUND,
+        ERROR_CODES.PLAYER_NOT_FOUND
+      );
+    }
+  }
+
+  /**
+   * Remove player from room with host transfer handling
+   */
+  async removePlayerWithDetails(playerId: string): Promise<{
+    removedPlayer: PlayerWithRoom;
+    newHost?: PlayerWithRoom;
+  }> {
+    try {
+      // Get player with user info before deletion
+      const player = await prisma.player.findUnique({
+        where: { id: playerId },
+        include: {
+          user: {
+            select: {
+              id: true,
+              username: true,
+              avatar: true,
+            }
+          },
+          room: {
+            select: {
+              id: true,
+              code: true,
+              name: true,
+              isPublic: true,
+              maxPlayers: true,
+              themeMode: true,
+            }
+          }
+        }
+      });
+
+      if (!player) {
+        throw new AppError(
+          'Player not found',
+          HTTP_STATUS.NOT_FOUND,
+          ERROR_CODES.PLAYER_NOT_FOUND
+        );
+      }
+
+      let newHost: PlayerWithRoom | undefined;
+
+      // Handle host transfer if player is host
+      if (player.isHost) {
+        const remainingPlayers = await prisma.player.findMany({
+          where: {
+            roomId: player.roomId,
+            id: { not: playerId },
+            isOnline: true,
+          },
+          include: {
+            user: {
+              select: {
+                id: true,
+                username: true,
+                avatar: true,
+              }
+            },
+            room: {
+              select: {
+                id: true,
+                code: true,
+                name: true,
+                isPublic: true,
+                maxPlayers: true,
+                themeMode: true,
+              }
+            }
+          }
+        });
+
+        if (remainingPlayers.length > 0) {
+          // Transfer host to first remaining player
+          newHost = await prisma.player.update({
+            where: { id: remainingPlayers[0].id },
+            data: { isHost: true },
+            include: {
+              user: {
+                select: {
+                  id: true,
+                  username: true,
+                  avatar: true,
+                }
+              },
+              room: {
+                select: {
+                  id: true,
+                  code: true,
+                  name: true,
+                  isPublic: true,
+                  maxPlayers: true,
+                  themeMode: true,
+                }
+              }
+            }
+          });
+        }
+      }
+
+      // Remove the player
+      await prisma.player.delete({
+        where: { id: playerId }
+      });
+
+      logger.info('Player removed from room with details', {
+        playerId: player.id,
+        userId: player.userId,
+        username: player.user.username,
+        roomId: player.roomId,
+        roomCode: player.room.code,
+        wasHost: player.isHost,
+        newHostId: newHost?.id,
+      });
+
+      return {
+        removedPlayer: player,
+        newHost,
+      };
+
+    } catch (error) {
+      if (error instanceof AppError) {
+        throw error;
+      }
+      
+      logger.error('Failed to remove player with details', { 
+        error: error instanceof Error ? error.message : 'Unknown error', 
+        playerId 
+      });
+      
+      throw new AppError(
+        'Failed to remove player',
+        HTTP_STATUS.INTERNAL_SERVER_ERROR,
+        ERROR_CODES.VALIDATION_ERROR
+      );
+    }
+  }
+
+  /**
+   * Reconnect player (update socket and online status)
+   */
+  async reconnectPlayer(playerId: string, socketId: string): Promise<PlayerWithRoom> {
+    try {
+      const player = await prisma.player.update({
+        where: { id: playerId },
+        data: {
+          socketId,
+          isOnline: true,
+          lastSeen: new Date(),
+        },
+        include: {
+          user: {
+            select: {
+              id: true,
+              username: true,
+              avatar: true,
+            }
+          },
+          room: {
+            select: {
+              id: true,
+              code: true,
+              name: true,
+              isPublic: true,
+              maxPlayers: true,
+              themeMode: true,
+            }
+          }
+        }
+      });
+
+      logger.debug('Player reconnected', {
+        playerId: player.id,
+        userId: player.userId,
+        username: player.user.username,
+        socketId,
+      });
+
+      return player;
+
+    } catch (error) {
+      logger.error('Failed to reconnect player', { 
+        error: error instanceof Error ? error.message : 'Unknown error', 
+        playerId,
+        socketId,
+      });
+      throw new AppError(
+        'Failed to reconnect player',
+        HTTP_STATUS.NOT_FOUND,
+        ERROR_CODES.PLAYER_NOT_FOUND
+      );
+    }
+  }
+
+  /**
+   * Disconnect player (mark as offline)
+   */
+  async disconnectPlayer(playerId: string): Promise<PlayerWithRoom> {
+    try {
+      const player = await prisma.player.update({
+        where: { id: playerId },
+        data: {
+          isOnline: false,
+          socketId: null,
+          lastSeen: new Date(),
+        },
+        include: {
+          user: {
+            select: {
+              id: true,
+              username: true,
+              avatar: true,
+            }
+          },
+          room: {
+            select: {
+              id: true,
+              code: true,
+              name: true,
+              isPublic: true,
+              maxPlayers: true,
+              themeMode: true,
+            }
+          }
+        }
+      });
+
+      logger.debug('Player disconnected', {
+        playerId: player.id,
+        userId: player.userId,
+        username: player.user.username,
+      });
+
+      return player;
+
+    } catch (error) {
+      logger.error('Failed to disconnect player', { 
+        error: error instanceof Error ? error.message : 'Unknown error', 
+        playerId 
+      });
+      throw new AppError(
+        'Failed to disconnect player',
+        HTTP_STATUS.NOT_FOUND,
+        ERROR_CODES.PLAYER_NOT_FOUND
+      );
     }
   }
 
   /**
    * Remove player from room
    */
-  async removePlayer(playerId: string): Promise<{ removedPlayer: PlayerWithRoom; newHost?: PlayerWithRoom }> {
-    const player = await this.getPlayerById(playerId);
-    if (!player) {
-      throw new AppError(
-        'Player not found',
-        HTTP_STATUS.NOT_FOUND,
-        ERROR_CODES.PLAYER_NOT_FOUND
-      );
-    }
-
+  async removePlayer(playerId: string): Promise<void> {  // ✅ FIXED: Proper return type
     try {
-      const result = await prisma.$transaction(async (tx) => {
-        // Remove the player
-        await tx.player.delete({
-          where: { id: playerId }
-        });
-
-        let newHost = undefined;
-
-        // If the removed player was the host, assign a new host
-        if (player.isHost) {
-          const remainingPlayers = await tx.player.findMany({
-            where: { roomId: player.roomId },
-            orderBy: { joinedAt: 'asc' },
-            take: 1,
-          });
-
-          if (remainingPlayers.length > 0) {
-            newHost = await tx.player.update({
-              where: { id: remainingPlayers[0].id },
-              data: { isHost: true },
-              include: {
-                room: {
-                  select: {
-                    id: true,
-                    code: true,
-                    name: true,
-                    isPublic: true,
-                    maxPlayers: true,
-                    themeMode: true,
-                  }
-                }
-              }
-            });
+      // ✅ FIXED: Get player with user info before deletion
+      const player = await prisma.player.findUnique({
+        where: { id: playerId },
+        include: {
+          user: {
+            select: {
+              id: true,
+              username: true,
+            }
+          },
+          room: {
+            select: {
+              id: true,
+              code: true,
+            }
           }
         }
-
-        return { newHost };
       });
 
-      logger.gameEvent('Player removed', player.roomId, playerId, {
-        playerName: player.name,
-        wasHost: player.isHost,
-        newHostId: result.newHost?.id,
+      if (!player) {
+        throw new AppError(
+          'Player not found',
+          HTTP_STATUS.NOT_FOUND,
+          ERROR_CODES.PLAYER_NOT_FOUND
+        );
+      }
+
+      await prisma.player.delete({
+        where: { id: playerId }
       });
 
-      return {
-        removedPlayer: player,
-        newHost: result.newHost,
-      };
+      logger.info('Player removed from room', {
+        playerId: player.id,
+        userId: player.userId,
+        username: player.user.username,
+        roomId: player.roomId,
+        roomCode: player.room.code,
+      });
+
+      // ✅ FIXED: No return statement (void return type)
+
     } catch (error) {
-      logger.error('Failed to remove player', { error, playerId });
-      throw new AppError('Failed to remove player');
-    }
-  }
-
-  /**
-   * Set player as host
-   */
-  async setPlayerAsHost(playerId: string): Promise<PlayerWithRoom> {
-    const player = await this.getPlayerById(playerId);
-    if (!player) {
+      if (error instanceof AppError) {
+        throw error;
+      }
+      
+      logger.error('Failed to remove player', { 
+        error: error instanceof Error ? error.message : 'Unknown error', 
+        playerId 
+      });
+      
       throw new AppError(
-        'Player not found',
-        HTTP_STATUS.NOT_FOUND,
-        ERROR_CODES.PLAYER_NOT_FOUND
+        'Failed to remove player',
+        HTTP_STATUS.INTERNAL_SERVER_ERROR,
+        ERROR_CODES.VALIDATION_ERROR
       );
     }
+  }
 
+  /**
+   * Transfer host to another player
+   */
+  async transferHost(currentHostId: string, newHostId: string): Promise<void> {
     try {
-      // Remove host status from current host and set new host
-      await prisma.$transaction(async (tx) => {
-        // Remove host status from all players in the room
-        await tx.player.updateMany({
-          where: { roomId: player.roomId },
-          data: { isHost: false },
-        });
+      await prisma.$transaction([
+        // Remove host from current host
+        prisma.player.update({
+          where: { id: currentHostId },
+          data: { isHost: false }
+        }),
+        // Set new host
+        prisma.player.update({
+          where: { id: newHostId },
+          data: { isHost: true }
+        })
+      ]);
 
-        // Set the specified player as host
-        await tx.player.update({
-          where: { id: playerId },
-          data: { isHost: true },
-        });
+      logger.info('Host transferred', {
+        fromPlayerId: currentHostId,
+        toPlayerId: newHostId,
       });
 
-      const updatedPlayer = await this.getPlayerById(playerId);
-      if (!updatedPlayer) {
-        throw new AppError('Failed to retrieve updated player');
-      }
-
-      logger.gameEvent('Host changed', player.roomId, playerId, {
-        newHostName: updatedPlayer.name,
-      });
-
-      return updatedPlayer;
     } catch (error) {
-      logger.error('Failed to set player as host', { error, playerId });
-      throw new AppError('Failed to set player as host');
+      logger.error('Failed to transfer host', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+        currentHostId,
+        newHostId,
+      });
+      throw new AppError(
+        'Failed to transfer host',
+        HTTP_STATUS.INTERNAL_SERVER_ERROR,
+        ERROR_CODES.VALIDATION_ERROR
+      );
     }
   }
 
   /**
-   * Disconnect player (set offline)
+   * Get player by ID
    */
-  async disconnectPlayer(playerId: string): Promise<PlayerWithRoom | null> {
+  async getPlayerById(playerId: string): Promise<PlayerWithRoom | null> {
     try {
-      const updatedPlayer = await this.updatePlayer(playerId, {
-        isOnline: false,
-        socketId: undefined,
-        lastSeen: new Date(),
-      });
-
-      logger.gameEvent('Player disconnected', updatedPlayer.roomId, playerId);
-      return updatedPlayer;
-    } catch (error) {
-      if (error instanceof AppError && error.errorCode === ERROR_CODES.PLAYER_NOT_FOUND) {
-        return null;
-      }
-      throw error;
-    }
-  }
-
-  /**
-   * Reconnect player (set online)
-   */
-  async reconnectPlayer(playerId: string, socketId: string): Promise<PlayerWithRoom> {
-    const updatedPlayer = await this.updatePlayer(playerId, {
-      isOnline: true,
-      socketId,
-    });
-
-    logger.gameEvent('Player reconnected', updatedPlayer.roomId, playerId);
-    return updatedPlayer;
-  }
-
-  /**
-   * Clean up offline players after timeout
-   */
-  async cleanupOfflinePlayers(timeoutMs: number = 300000): Promise<number> {
-    const cutoffTime = new Date(Date.now() - timeoutMs);
-
-    try {
-      const result = await prisma.player.deleteMany({
-        where: {
-          isOnline: false,
-          lastSeen: {
-            lt: cutoffTime,
+      const player = await prisma.player.findUnique({
+        where: { id: playerId },
+        include: {
+          user: {
+            select: {
+              id: true,
+              username: true,
+              avatar: true,
+            }
           },
+          room: {
+            select: {
+              id: true,
+              code: true,
+              name: true,
+              isPublic: true,
+              maxPlayers: true,
+              themeMode: true,
+            }
+          }
         }
       });
 
-      if (result.count > 0) {
-        logger.info(`Cleaned up ${result.count} offline players`);
-      }
-
-      return result.count;
+      return player;
     } catch (error) {
-      logger.error('Failed to cleanup offline players', { error });
-      return 0;
+      logger.error('Failed to get player by ID', { 
+        error: error instanceof Error ? error.message : 'Unknown error', 
+        playerId 
+      });
+      return null;
+    }
+  }
+
+  /**
+   * Get player by user ID and room ID
+   */
+  async getPlayerByUserAndRoom(userId: string, roomId: string): Promise<PlayerWithRoom | null> {
+    try {
+      const player = await prisma.player.findFirst({
+        where: { 
+          userId,
+          roomId 
+        },
+        include: {
+          user: {
+            select: {
+              id: true,
+              username: true,
+              avatar: true,
+            }
+          },
+          room: {
+            select: {
+              id: true,
+              code: true,
+              name: true,
+              isPublic: true,
+              maxPlayers: true,
+              themeMode: true,
+            }
+          }
+        }
+      });
+
+      return player;
+    } catch (error) {
+      logger.error('Failed to get player by user and room', { 
+        error: error instanceof Error ? error.message : 'Unknown error', 
+        userId,
+        roomId 
+      });
+      return null;
+    }
+  }
+
+  /**
+   * Update player online status
+   */
+  async updatePlayerOnlineStatus(playerId: string, isOnline: boolean): Promise<void> {
+    try {
+      await prisma.player.update({
+        where: { id: playerId },
+        data: { 
+          isOnline,
+          lastSeen: new Date()
+        }
+      });
+
+      logger.debug('Player online status updated', {
+        playerId,
+        isOnline,
+      });
+
+    } catch (error) {
+      logger.error('Failed to update player online status', { 
+        error: error instanceof Error ? error.message : 'Unknown error', 
+        playerId,
+        isOnline 
+      });
+    }
+  }
+
+  /**
+   * Get host player in a room
+   */
+  async getHostPlayer(roomId: string): Promise<PlayerWithRoom | null> {
+    try {
+      const hostPlayer = await prisma.player.findFirst({
+        where: { 
+          roomId,
+          isHost: true 
+        },
+        include: {
+          user: {
+            select: {
+              id: true,
+              username: true,
+              avatar: true,
+            }
+          },
+          room: {
+            select: {
+              id: true,
+              code: true,
+              name: true,
+              isPublic: true,
+              maxPlayers: true,
+              themeMode: true,
+            }
+          }
+        }
+      });
+
+      return hostPlayer;
+    } catch (error) {
+      logger.error('Failed to get host player', { 
+        error: error instanceof Error ? error.message : 'Unknown error', 
+        roomId 
+      });
+      return null;
     }
   }
 }
 
-// Export singleton instance
 export const PlayerService = new PlayerServiceClass();

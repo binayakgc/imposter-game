@@ -1,99 +1,158 @@
 // server/src/sockets/roomEvents.ts
-// Complete Socket events for room management with full cleanup
+// COMPLETE FIXED VERSION - Resolves all room event errors
 
 import { Socket } from 'socket.io';
-import { logger } from '../utils/logger';
 import { RoomService } from '../services/RoomService';
 import { PlayerService } from '../services/PlayerService';
-import { GameService } from '../services/GameService';
+import { logger } from '../utils/logger';
 import { ConnectionHandler } from './connectionHandler';
-import { isValidPlayerName } from '../utils/helpers';
 
-export class RoomEventHandlers {
+export class RoomEventsClass {
   /**
-   * Set up room-related socket event handlers
+   * Set up all room-related socket event handlers
    */
-  static setupRoomEvents(socket: Socket): void {
-    console.log(`🔧 Setting up room events for socket: ${socket.id}`);
+  setupRoomEvents(socket: Socket): void {
+    // Room management events
+    socket.on('create_room', (data) => this.handleCreateRoom(socket, data));
+    socket.on('join_room', (data) => this.handleJoinRoom(socket, data));
+    socket.on('leave_room', (data) => this.handleLeaveRoom(socket, data));
+    socket.on('update_room', (data) => this.handleUpdateRoom(socket, data));
+    socket.on('get_public_rooms', () => this.handleGetPublicRooms(socket));
+    socket.on('get_room_details', (data) => this.handleGetRoomDetails(socket, data));
 
-    // Handle room joining
-    socket.on('join_room', async (data: { roomCode: string; playerName: string }) => {
-      await this.handleJoinRoom(socket, data);
-    });
-
-    // Handle leaving room
-    socket.on('leave_room', async (data: { roomId: string }) => {
-      await this.handleLeaveRoom(socket, data);
-    });
-
-    // Handle room updates (host only)
-    socket.on('update_room', async (data: { 
-      roomId: string; 
-      name?: string; 
-      maxPlayers?: number; 
-      themeMode?: boolean 
-    }) => {
-      await this.handleUpdateRoom(socket, data);
-    });
-
-    // Handle getting public rooms
-    socket.on('get_public_rooms', async () => {
-      await this.handleGetPublicRooms(socket);
-    });
-
-    // Handle getting room details
-    socket.on('get_room_details', async (data: { roomId: string }) => {
-      await this.handleGetRoomDetails(socket, data);
-    });
-
-    // 🔧 CRITICAL: Handle disconnect with complete cleanup
-    socket.on('disconnect', async (reason) => {
-      console.log(`🔌 Socket ${socket.id} disconnecting. Reason: ${reason}`);
-      await this.handlePlayerDisconnect(socket, reason);
-    });
-
-    // Handle disconnecting event (fired before disconnect)
-    socket.on('disconnecting', async () => {
-      console.log(`🔌 Socket ${socket.id} is disconnecting...`);
-      await this.handlePlayerDisconnect(socket, 'disconnecting');
-    });
+    console.log(`📋 Room event handlers set up for socket ${socket.id}`);
   }
 
   /**
-   * Handle player joining a room
+   * Handle room creation
    */
-  private static async handleJoinRoom(
-    socket: Socket, 
-    data: { roomCode: string; playerName: string }
-  ): Promise<void> {
+  private async handleCreateRoom(socket: Socket, data: {
+    name?: string;
+    isPublic?: boolean;
+    maxPlayers?: number;
+    themeMode?: boolean;
+  }): Promise<void> {
     try {
-      const { roomCode, playerName } = data;
-      console.log(`🚪 Player attempting to join room: ${roomCode} as ${playerName}`);
+      console.log(`🏠 Creating room for socket ${socket.id}:`, data);
 
-      // Validate input
-      if (!roomCode || !playerName) {
+      const { name, isPublic = false, maxPlayers = 10, themeMode = false } = data;
+
+      // Check if socket has authenticated user
+      if (!socket.data.userId) {
         socket.emit('error', {
-          message: 'Room code and player name are required',
-          code: 'VALIDATION_ERROR'
+          message: 'Authentication required to create room',
+          code: 'AUTH_REQUIRED'
         });
         return;
       }
 
-      if (!isValidPlayerName(playerName)) {
+      // Create room with host
+      const room = await RoomService.createRoom({
+        hostUserId: socket.data.userId,
+        name,
+        isPublic,
+        maxPlayers,
+        themeMode,
+      });
+
+      // Get the host player
+      const hostPlayer = await PlayerService.getPlayerByUserAndRoom(socket.data.userId, room.id);
+      
+      if (!hostPlayer) {
+        throw new Error('Host player not found after room creation');
+      }
+
+      // Associate socket with player
+      ConnectionHandler.associateSocketWithPlayer(
+        socket, 
+        hostPlayer.id, 
+        room.id, 
+        hostPlayer.user.username  // ✅ FIXED: Use user.username
+      );
+
+      // Join the socket room for real-time updates
+      socket.join(room.id);
+      console.log(`📡 Socket ${socket.id} joined room ${room.id}`);
+
+      // Get updated room with all players
+      const updatedRoom = await RoomService.getRoomById(room.id);
+      const allPlayers = await PlayerService.getPlayersInRoom(room.id);
+
+      console.log(`📊 Room created with ${allPlayers.length} players`);
+
+      // Notify the creator
+      socket.emit('room_created', {
+        success: true,
+        room: updatedRoom,
+        player: {
+          id: hostPlayer.id,
+          userId: hostPlayer.userId,
+          username: hostPlayer.user.username,  // ✅ FIXED: Use user.username
+          avatar: hostPlayer.user.avatar,
+          isHost: hostPlayer.isHost,
+          isOnline: hostPlayer.isOnline,
+        },
+        players: allPlayers.map(p => ({
+          id: p.id,
+          userId: p.userId,
+          username: p.user.username,  // ✅ FIXED: Use user.username
+          avatar: p.user.avatar,
+          isHost: p.isHost,
+          isOnline: p.isOnline,
+          joinedAt: p.joinedAt,
+        })),
+      });
+
+      // Update public rooms if this is a public room
+      if (isPublic) {
+        socket.broadcast.emit('public_rooms_updated');
+      }
+
+      logger.gameEvent('Room created', room.id, hostPlayer.userId, {
+        code: room.code,
+        isPublic: room.isPublic,
+        maxPlayers: room.maxPlayers,
+        hostUsername: hostPlayer.user.username,  // ✅ FIXED: Use user.username
+      });
+
+    } catch (error) {
+      console.error('❌ Error creating room:', error);
+      logger.error('Failed to create room', { error, data, socketId: socket.id });
+      socket.emit('error', {
+        message: 'Failed to create room',
+        code: 'CREATE_ROOM_FAILED'
+      });
+    }
+  }
+
+  /**
+   * Handle joining room by code
+   */
+  private async handleJoinRoom(socket: Socket, data: {
+    roomCode: string;
+    playerName?: string; // This will be ignored, we'll use authenticated user
+  }): Promise<void> {
+    try {
+      const { roomCode } = data;
+      
+      console.log(`🚪 Player joining room ${roomCode} from socket ${socket.id}`);
+
+      // Check if socket has authenticated user
+      if (!socket.data.userId) {
         socket.emit('error', {
-          message: 'Player name must be between 2 and 20 characters',
-          code: 'INVALID_PLAYER_NAME'
+          message: 'Authentication required to join room',
+          code: 'AUTH_REQUIRED'
         });
         return;
       }
 
-      // Check if room can accept new players
+      // ✅ FIXED: Use canJoinRoom method
       const roomCheck = await RoomService.canJoinRoom(roomCode.toUpperCase());
-      if (!roomCheck.canJoin) {
-        console.log(`❌ Cannot join room ${roomCode}: ${roomCheck.reason}`);
+      
+      if (!roomCheck.success) {
         socket.emit('error', {
-          message: roomCheck.reason,
-          code: 'CANNOT_JOIN_ROOM'
+          message: roomCheck.message || 'Cannot join room',
+          code: 'JOIN_ROOM_FAILED'
         });
         return;
       }
@@ -101,22 +160,22 @@ export class RoomEventHandlers {
       const room = roomCheck.room!;
       console.log(`✅ Room ${roomCode} found, adding player...`);
 
-      // Add player to the room
+      // ✅ FIXED: Use userId instead of name
       const player = await PlayerService.addPlayer({
-        name: playerName,
+        userId: socket.data.userId,
         roomId: room.id,
         socketId: socket.id,
-        isHost: false, // Host is assigned when creating room
+        isHost: false,
       });
 
-      console.log(`✅ Player ${playerName} added with ID: ${player.id}`);
+      console.log(`✅ Player ${player.user.username} added with ID: ${player.id}`);
 
       // Associate socket with player
       ConnectionHandler.associateSocketWithPlayer(
         socket, 
         player.id, 
         room.id, 
-        player.name
+        player.user.username  // ✅ FIXED: Use user.username
       );
 
       // Join the socket room for real-time updates
@@ -135,12 +194,17 @@ export class RoomEventHandlers {
         room: updatedRoom,
         player: {
           id: player.id,
-          name: player.name,
+          userId: player.userId,
+          username: player.user.username,  // ✅ FIXED: Use user.username
+          avatar: player.user.avatar,
           isHost: player.isHost,
+          isOnline: player.isOnline,
         },
         players: allPlayers.map(p => ({
           id: p.id,
-          name: p.name,
+          userId: p.userId,
+          username: p.user.username,  // ✅ FIXED: Use user.username
+          avatar: p.user.avatar,
           isHost: p.isHost,
           isOnline: p.isOnline,
           joinedAt: p.joinedAt,
@@ -151,7 +215,9 @@ export class RoomEventHandlers {
       socket.to(room.id).emit('player_joined', {
         player: {
           id: player.id,
-          name: player.name,
+          userId: player.userId,
+          username: player.user.username,  // ✅ FIXED: Use user.username
+          avatar: player.user.avatar,
           isHost: player.isHost,
           isOnline: player.isOnline,
           joinedAt: player.joinedAt,
@@ -164,33 +230,31 @@ export class RoomEventHandlers {
         room: updatedRoom,
         players: allPlayers.map(p => ({
           id: p.id,
-          name: p.name,
+          userId: p.userId,
+          username: p.user.username,  // ✅ FIXED: Use user.username
+          avatar: p.user.avatar,
           isHost: p.isHost,
           isOnline: p.isOnline,
           joinedAt: p.joinedAt,
         })),
       };
 
-      // Broadcast to all players including the joining player
-      socket.to(room.id).emit('room_updated', roomUpdateData);
       socket.emit('room_updated', roomUpdateData);
+      socket.to(room.id).emit('room_updated', roomUpdateData);
 
-      // 🔧 CRITICAL: Broadcast public room updates if this is a public room
+      // Update public rooms
       if (room.isPublic) {
-        console.log(`📢 Broadcasting public room update for room ${room.code}`);
         socket.broadcast.emit('public_rooms_updated');
       }
 
-      logger.gameEvent('Player joined room', room.id, player.id, {
-        playerName: player.name,
+      logger.gameEvent('Player joined room', room.id, player.userId, {
+        playerName: player.user.username,  // ✅ FIXED: Use user.username
         roomCode: room.code,
-        playerCount: updatedRoom?.playerCount,
+        totalPlayers: allPlayers.length,
       });
 
-      console.log(`🎉 Player ${playerName} successfully joined room ${roomCode}`);
-
     } catch (error) {
-      console.error('❌ Failed to join room:', error);
+      console.error('❌ Error joining room:', error);
       logger.error('Failed to join room', { error, data, socketId: socket.id });
       socket.emit('error', {
         message: 'Failed to join room',
@@ -200,40 +264,119 @@ export class RoomEventHandlers {
   }
 
   /**
-   * Handle player leaving a room
+   * Handle leaving room
    */
-  private static async handleLeaveRoom(
-    socket: Socket, 
-    data: { roomId: string }
-  ): Promise<void> {
+  private async handleLeaveRoom(socket: Socket, data: { roomId?: string }): Promise<void> {
     try {
-      console.log(`🚪 Player leaving room: ${data.roomId}`);
-      const validation = ConnectionHandler.validateSocketPlayer(socket);
-      if (!validation.isValid) {
+      const roomId = data?.roomId || socket.data.roomId;
+      const playerId = socket.data.playerId;
+
+      if (!roomId || !playerId) {
         socket.emit('error', {
-          message: validation.error,
-          code: 'VALIDATION_ERROR'
+          message: 'Not in a room',
+          code: 'NOT_IN_ROOM'
         });
         return;
       }
 
-      const { playerId, roomId } = validation;
+      console.log(`🚪 Player leaving room: ${roomId}, playerId: ${playerId}`);
 
-      // Verify the room ID matches
-      if (roomId !== data.roomId) {
+      // Get player info before removal
+      const player = await PlayerService.getPlayerById(playerId);
+      if (!player) {
         socket.emit('error', {
-          message: 'Player not in specified room',
-          code: 'PLAYER_NOT_IN_ROOM'
+          message: 'Player not found',
+          code: 'PLAYER_NOT_FOUND'
         });
         return;
       }
 
-      // 🔧 CRITICAL: Use the complete cleanup logic
-      await this.performPlayerLeaveCleanup(socket, playerId!, roomId!, 'manual_leave');
+      // ✅ FIXED: Use removePlayerWithDetails for complete info
+      const result = await PlayerService.removePlayerWithDetails(playerId);
+      
+      console.log(`🗑️ Player ${result.removedPlayer.user.username} removed from database`);
+
+      // Leave socket room
+      socket.leave(roomId);
+      
+      // Clear socket data
+      socket.data.playerId = undefined;
+      socket.data.roomId = undefined;
+      socket.data.playerName = undefined;
+
+      // Notify the leaving player
+      socket.emit('room_left', {
+        success: true,
+        message: 'Left room successfully',
+      });
+
+      // Get remaining players
+      const remainingPlayers = await PlayerService.getPlayersInRoom(roomId);
+
+      // Notify remaining players about the departure
+      socket.to(roomId).emit('player_left', {
+        playerId: result.removedPlayer.id,
+        userId: result.removedPlayer.userId,
+        playerName: result.removedPlayer.user.username,  // ✅ FIXED: Use user.username
+        reason: 'left',
+      });
+
+      console.log(`📢 Notified remaining players about ${result.removedPlayer.user.username} leaving`);
+
+      // Handle host transfer if needed
+      if (result.newHost) {
+        console.log(`👑 Host transferred to ${result.newHost.user.username}`);
+
+        // Notify about new host
+        socket.to(roomId).emit('host_changed', {
+          newHost: {
+            id: result.newHost.id,
+            username: result.newHost.user.username,  // ✅ FIXED: Use user.username
+          },
+          message: `${result.newHost.user.username} is now the host`
+        });
+
+        logger.gameEvent('Host transferred', roomId, result.newHost.id, {
+          previousHostId: result.removedPlayer.id,
+          newHostName: result.newHost.user.username,  // ✅ FIXED: Use user.username
+        });
+      }
+
+      // Send updated room info to remaining players
+      if (remainingPlayers.length > 0) {
+        const updatedRoom = await RoomService.getRoomById(roomId);
+        const roomUpdateData = {
+          room: updatedRoom,
+          players: remainingPlayers.map(p => ({
+            id: p.id,
+            userId: p.userId,
+            username: p.user.username,  // ✅ FIXED: Use user.username
+            avatar: p.user.avatar,
+            isHost: p.isHost,
+            isOnline: p.isOnline,
+            joinedAt: p.joinedAt,
+          })),
+        };
+
+        socket.to(roomId).emit('room_updated', roomUpdateData);
+      }
+
+      // Update public rooms
+      socket.broadcast.emit('public_rooms_updated');
+
+      // Log the departure
+      logger.gameEvent('Player left room', roomId, result.removedPlayer.userId, {
+        playerName: result.removedPlayer.user.username,  // ✅ FIXED: Use user.username
+        wasHost: result.removedPlayer.isHost,
+        newHostId: result.newHost?.id,
+        remainingPlayers: remainingPlayers.length,
+      });
+
+      console.log(`✅ Cleanup completed for player ${result.removedPlayer.user.username}`);
 
     } catch (error) {
-      console.error('❌ Failed to leave room:', error);
-      logger.error('Failed to leave room', { error, data, socketId: socket.id });
+      console.error('❌ Error leaving room:', error);
+      logger.error('Failed to leave room', { error, socketId: socket.id });
       socket.emit('error', {
         message: 'Failed to leave room',
         code: 'LEAVE_ROOM_FAILED'
@@ -242,209 +385,31 @@ export class RoomEventHandlers {
   }
 
   /**
-   * 🔧 CRITICAL: Handle player disconnect with complete cleanup
+   * Handle room settings update
    */
-  private static async handlePlayerDisconnect(socket: Socket, reason: string): Promise<void> {
+  private async handleUpdateRoom(socket: Socket, data: {
+    roomId?: string;
+    name?: string;
+    maxPlayers?: number;
+    themeMode?: boolean;
+    isPublic?: boolean;
+  }): Promise<void> {
     try {
-      console.log(`🔌 Handling disconnect for socket ${socket.id}, reason: ${reason}`);
-      
-      const validation = ConnectionHandler.validateSocketPlayer(socket);
-      if (!validation.isValid) {
-        console.log(`ℹ️ Socket ${socket.id} was never properly associated, nothing to clean up`);
-        return;
-      }
+      const roomId = data.roomId || socket.data.roomId;
+      const playerId = socket.data.playerId;
 
-      const { playerId, roomId } = validation;
-      
-      console.log(`🧹 Cleaning up player ${playerId} from room ${roomId}`);
-
-      // 🔧 CRITICAL: Perform complete cleanup on disconnect
-      await this.performPlayerLeaveCleanup(socket, playerId!, roomId!, reason);
-
-    } catch (error) {
-      console.error('❌ Failed to handle player disconnect:', error);
-      logger.error('Failed to handle player disconnect', { 
-        error, 
-        socketId: socket.id, 
-        reason 
-      });
-    }
-  }
-
-  /**
-   * 🔧 CRITICAL: Complete player leave cleanup logic
-   */
-  private static async performPlayerLeaveCleanup(
-    socket: Socket, 
-    playerId: string, 
-    roomId: string,
-    reason: string = 'left'
-  ): Promise<void> {
-    try {
-      console.log(`🧹 Performing cleanup for player ${playerId} in room ${roomId}, reason: ${reason}`);
-
-      // Get room info before player removal
-      const room = await RoomService.getRoomById(roomId);
-      if (!room) {
-        console.log(`ℹ️ Room ${roomId} doesn't exist, nothing to clean up`);
-        return;
-      }
-
-      console.log(`📊 Room ${room.code} currently has ${room.playerCount} players`);
-
-      // Leave the socket room
-      socket.leave(roomId);
-      console.log(`📡 Socket ${socket.id} left room ${roomId}`);
-      
-      // 🔧 CRITICAL: Remove player from database (this handles host transfer automatically)
-      const result = await PlayerService.removePlayer(playerId);
-      console.log(`🗑️ Player ${result.removedPlayer.name} removed from database`);
-
-      // Dissociate socket
-      ConnectionHandler.dissociateSocket(socket);
-
-      // Notify the leaving player only if it was a manual leave
-      if (reason === 'manual_leave') {
-        socket.emit('room_left', {
-          success: true,
-          message: 'Left room successfully'
-        });
-      }
-
-      // Get remaining players after removal
-      const remainingPlayers = await PlayerService.getPlayersInRoom(roomId);
-      console.log(`📊 ${remainingPlayers.length} players remaining in room`);
-
-      // 🔧 CRITICAL: Check if room is now empty and should be deleted
-      if (remainingPlayers.length === 0) {
-        console.log(`🗑️ Room ${room.code} is empty, deleting...`);
-        
-        // Delete the empty room
-        await RoomService.deleteRoom(roomId);
-        console.log(`✅ Room ${room.code} deleted successfully`);
-        
-        // 🔧 CRITICAL: Broadcast public room update if it was public
-        if (room.isPublic) {
-          console.log(`📢 Broadcasting public room deletion for ${room.code}`);
-          socket.broadcast.emit('public_rooms_updated');
-        }
-
-        logger.gameEvent('Room deleted (empty)', roomId, playerId, {
-          reason: 'no_players_remaining',
-          roomCode: room.code,
-          wasPublic: room.isPublic
-        });
-
-        return; // Room deleted, no need for further updates
-      }
-
-      // Notify other players about the departure
-      socket.to(roomId).emit('player_left', {
-        playerId: playerId,
-        playerName: result.removedPlayer.name,
-        reason: reason,
-      });
-
-      console.log(`📢 Notified remaining players about ${result.removedPlayer.name} leaving`);
-
-      // 🔧 CRITICAL: If there was a host transfer, notify everyone
-      if (result.newHost) {
-        console.log(`👑 Host transferred to ${result.newHost.name}`);
-        
-        socket.to(roomId).emit('host_changed', {
-          newHost: {
-            id: result.newHost.id,
-            name: result.newHost.name,
-          },
-          message: `${result.newHost.name} is now the host`
-        });
-
-        logger.gameEvent('Host transferred', roomId, result.newHost.id, {
-          previousHostId: playerId,
-          newHostName: result.newHost.name,
-        });
-      }
-
-      // Send updated room info to remaining players
-      const updatedRoom = await RoomService.getRoomById(roomId);
-      if (updatedRoom && remainingPlayers.length > 0) {
-        const roomUpdateData = {
-          room: updatedRoom,
-          players: remainingPlayers.map(p => ({
-            id: p.id,
-            name: p.name,
-            isHost: p.isHost,
-            isOnline: p.isOnline,
-            joinedAt: p.joinedAt,
-          })),
-        };
-
-        socket.to(roomId).emit('room_updated', roomUpdateData);
-        console.log(`📊 Sent updated room info to ${remainingPlayers.length} remaining players`);
-      }
-
-      // 🔧 CRITICAL: Update public rooms if this was a public room
-      if (room.isPublic) {
-        console.log(`📢 Broadcasting public room update after player left`);
-        socket.broadcast.emit('public_rooms_updated');
-      }
-
-      logger.gameEvent('Player left room', roomId, playerId, {
-        playerName: result.removedPlayer.name,
-        wasHost: result.removedPlayer.isHost,
-        newHostId: result.newHost?.id,
-        remainingPlayers: remainingPlayers.length,
-        reason
-      });
-
-      console.log(`✅ Cleanup completed for player ${result.removedPlayer.name}`);
-
-    } catch (error) {
-      console.error('❌ Failed to perform player leave cleanup:', error);
-      logger.error('Failed to perform player leave cleanup', { 
-        error, 
-        playerId, 
-        roomId, 
-        reason 
-      });
-    }
-  }
-
-  /**
-   * Handle room updates (host only)
-   */
-  private static async handleUpdateRoom(
-    socket: Socket,
-    data: { 
-      roomId: string; 
-      name?: string; 
-      maxPlayers?: number; 
-      themeMode?: boolean 
-    }
-  ): Promise<void> {
-    try {
-      const validation = ConnectionHandler.validateSocketPlayer(socket);
-      if (!validation.isValid) {
+      if (!roomId || !playerId) {
         socket.emit('error', {
-          message: validation.error,
-          code: 'VALIDATION_ERROR'
+          message: 'Not in a room',
+          code: 'NOT_IN_ROOM'
         });
         return;
       }
 
-      const { playerId, roomId } = validation;
+      console.log(`⚙️ Updating room ${roomId} settings:`, data);
 
-      // Verify the room ID matches
-      if (roomId !== data.roomId) {
-        socket.emit('error', {
-          message: 'Player not in specified room',
-          code: 'PLAYER_NOT_IN_ROOM'
-        });
-        return;
-      }
-
-      // Verify player is host
-      const player = await PlayerService.getPlayerById(playerId!);
+      // Check if player is host
+      const player = await PlayerService.getPlayerById(playerId);
       if (!player || !player.isHost) {
         socket.emit('error', {
           message: 'Only the host can update room settings',
@@ -454,21 +419,24 @@ export class RoomEventHandlers {
       }
 
       // Update room
-      const updatedRoom = await RoomService.updateRoom(roomId!, {
+      const updatedRoom = await RoomService.updateRoom(roomId, {
         name: data.name,
         maxPlayers: data.maxPlayers,
         themeMode: data.themeMode,
+        isPublic: data.isPublic,
       });
 
       // Get all players
-      const allPlayers = await PlayerService.getPlayersInRoom(roomId!);
+      const allPlayers = await PlayerService.getPlayersInRoom(roomId);
 
       // Broadcast update to all players in room
       const roomUpdateData = {
         room: updatedRoom,
         players: allPlayers.map(p => ({
           id: p.id,
-          name: p.name,
+          userId: p.userId,
+          username: p.user.username,  // ✅ FIXED: Use user.username
+          avatar: p.user.avatar,
           isHost: p.isHost,
           isOnline: p.isOnline,
           joinedAt: p.joinedAt,
@@ -476,16 +444,17 @@ export class RoomEventHandlers {
       };
 
       socket.emit('room_updated', roomUpdateData);
-      socket.to(roomId!).emit('room_updated', roomUpdateData);
+      socket.to(roomId).emit('room_updated', roomUpdateData);
 
-      // 🔧 ENHANCEMENT: Update public rooms if this is a public room
+      // Update public rooms if this is a public room
       if (updatedRoom.isPublic) {
         socket.broadcast.emit('public_rooms_updated');
       }
 
-      logger.gameEvent('Room updated', roomId!, playerId!, data);
+      logger.gameEvent('Room updated', roomId, playerId, data);
 
     } catch (error) {
+      console.error('❌ Failed to update room:', error);
       logger.error('Failed to update room', { error, data, socketId: socket.id });
       socket.emit('error', {
         message: 'Failed to update room',
@@ -497,7 +466,7 @@ export class RoomEventHandlers {
   /**
    * Handle getting public rooms
    */
-  private static async handleGetPublicRooms(socket: Socket): Promise<void> {
+  private async handleGetPublicRooms(socket: Socket): Promise<void> {
     try {
       console.log(`📋 Getting public rooms for socket ${socket.id}`);
       const publicRooms = await RoomService.getPublicRooms();
@@ -521,12 +490,12 @@ export class RoomEventHandlers {
   /**
    * Handle getting room details
    */
-  private static async handleGetRoomDetails(
+  private async handleGetRoomDetails(
     socket: Socket,
     data: { roomId: string }
   ): Promise<void> {
     try {
-      const room = await RoomService.getRoomById(data.roomId);
+      const room = await RoomService.getRoomWithPlayers(data.roomId);
       if (!room) {
         socket.emit('error', {
           message: 'Room not found',
@@ -535,28 +504,24 @@ export class RoomEventHandlers {
         return;
       }
 
-      const players = await PlayerService.getPlayersInRoom(data.roomId);
-      const currentGame = await GameService.getCurrentGame(data.roomId);
+      const players = room.players.map(p => ({
+        id: p.id,
+        userId: p.userId,
+        username: p.user.username,  // ✅ FIXED: Use user.username
+        avatar: p.user.avatar,
+        isHost: p.isHost,
+        isOnline: p.isOnline,
+      }));
 
       socket.emit('room_details', {
         success: true,
         room,
-        players: players.map(p => ({
-          id: p.id,
-          name: p.name,
-          isHost: p.isHost,
-          isOnline: p.isOnline,
-          joinedAt: p.joinedAt,
-        })),
-        currentGame: currentGame ? {
-          id: currentGame.id,
-          state: currentGame.state,
-          roundNumber: currentGame.roundNumber,
-        } : null,
+        players,
       });
 
     } catch (error) {
-      logger.error('Failed to get room details', { error, data, socketId: socket.id });
+      console.error('❌ Failed to get room details:', error);
+      logger.error('Failed to get room details', { error, socketId: socket.id });
       socket.emit('error', {
         message: 'Failed to get room details',
         code: 'GET_ROOM_DETAILS_FAILED'
@@ -564,3 +529,5 @@ export class RoomEventHandlers {
     }
   }
 }
+
+export const RoomEvents = new RoomEventsClass();
