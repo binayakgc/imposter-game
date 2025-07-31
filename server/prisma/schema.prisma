@@ -1,3 +1,6 @@
+// server/prisma/schema.prisma
+// Complete schema with User Authentication System
+
 generator client {
   provider = "prisma-client-js"
 }
@@ -6,6 +9,48 @@ datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
 }
+
+// ========================================
+// USER AUTHENTICATION TABLES
+// ========================================
+
+model User {
+  id        String   @id @default(cuid())
+  username  String   @unique @db.VarChar(20)  // Unique username
+  email     String?  @unique @db.VarChar(100) // Optional email
+  password  String   @db.VarChar(255)         // Hashed password
+  avatar    String?  @db.VarChar(10)          // Avatar emoji/ID
+  isOnline  Boolean  @default(false)          // Online status
+  lastSeen  DateTime @default(now())          // Last activity
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relationships
+  players   Player[]   // User can be in multiple rooms (different sessions)
+  sessions  UserSession[]
+
+  @@map("users")
+}
+
+model UserSession {
+  id        String   @id @default(cuid())
+  userId    String
+  token     String   @unique @db.VarChar(255)  // JWT or session token
+  socketId  String?  @unique @db.VarChar(100) // Current socket connection
+  isActive  Boolean  @default(true)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  lastUsed  DateTime @default(now())
+
+  // Relationships
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_sessions")
+}
+
+// ========================================
+// EXISTING GAME TABLES (ENHANCED)
+// ========================================
 
 model Room {
   id          String   @id @default(cuid())
@@ -18,6 +63,7 @@ model Room {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
+  // Relationships
   players     Player[]
   games       Game[]
 
@@ -25,39 +71,48 @@ model Room {
 }
 
 model Player {
-  id          String   @id @default(cuid())
-  name        String   @db.VarChar(30)
-  roomId      String
-  socketId    String?  @unique
-  isHost      Boolean  @default(false)
-  isOnline    Boolean  @default(true)
-  joinedAt    DateTime @default(now())
-  lastSeen    DateTime @default(now())
+  id        String   @id @default(cuid())
+  userId    String   // Link to User account
+  roomId    String
+  isHost    Boolean  @default(false)
+  isOnline  Boolean  @default(true)
+  socketId  String?  @unique @db.VarChar(100) // Current socket (can be null when offline)
+  joinedAt  DateTime @default(now())
+  lastSeen  DateTime @default(now())
 
-  room        Room     @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  // Relationships
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  room      Room     @relation(fields: [roomId], references: [id], onDelete: Cascade)
 
+  // Prevent duplicate users in same room
+  @@unique([userId, roomId])
   @@map("players")
 }
 
 model Game {
-  id              String      @id @default(cuid())
+  id              String    @id @default(cuid())
   roomId          String
-  currentWord     String?     @db.VarChar(100)
-  wordGiverId     String?
-  imposterId      String?
-  state           GameState   @default(WAITING)
-  roundNumber     Int         @default(1)
-  wordGiverQueue  String[]
-  votes           Json?
-  winner          String?
-  createdAt       DateTime    @default(now())
+  currentWord     String?   @db.VarChar(100)
+  wordGiverId     String?   // Player ID (not User ID)
+  imposterId      String?   // Player ID (not User ID)
+  state           GameState @default(WAITING)
+  roundNumber     Int       @default(1)
+  wordGiverQueue  String[]  // Array of Player IDs
+  votes           Json?     // Voting data
+  winner          String?   // Winner type: 'players' | 'imposter'
+  timeLimit       Int?      // Time limit in seconds
+  createdAt       DateTime  @default(now())
   completedAt     DateTime?
-  timeLimit       Int?
 
-  room            Room        @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  // Relationships
+  room            Room      @relation(fields: [roomId], references: [id], onDelete: Cascade)
 
   @@map("games")
 }
+
+// ========================================
+// ENUMS
+// ========================================
 
 enum GameState {
   WAITING

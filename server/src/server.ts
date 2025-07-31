@@ -20,7 +20,7 @@ import { initializeSocketIO } from './sockets';
 import healthRoutes from './routes/health';
 import roomRoutes from './routes/rooms';
 import gameRoutes from './routes/games';
-
+import authRoutes from './routes/auth';
 // Use local constants instead of importing from shared
 const HTTP_STATUS = {
   OK: 200,
@@ -87,6 +87,7 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 app.use('/api/health', healthRoutes);
 app.use('/api/rooms', roomRoutes);
 app.use('/api/games', gameRoutes);
+app.use('/api/auth', authRoutes);
 
 // Root endpoint
 app.get('/', (req: Request, res: Response) => {
