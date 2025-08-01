@@ -1,5 +1,5 @@
 // server/src/sockets/roomEvents.ts
-// COMPLETE FIXED VERSION - Resolves all room event errors
+// COMPLETE FIXED VERSION - Resolves associateSocketWithPlayer parameter errors
 
 import { Socket } from 'socket.io';
 import { RoomService } from '../services/RoomService';
@@ -62,62 +62,52 @@ export class RoomEventsClass {
         throw new Error('Host player not found after room creation');
       }
 
-      // Associate socket with player
+      // ✅ FIXED: Pass only 3 required parameters to associateSocketWithPlayer
       ConnectionHandler.associateSocketWithPlayer(
         socket, 
         hostPlayer.id, 
-        room.id, 
-        hostPlayer.user.username  // ✅ FIXED: Use user.username
+        room.id
       );
 
-      // Join the socket room for real-time updates
-      socket.join(room.id);
-      console.log(`📡 Socket ${socket.id} joined room ${room.id}`);
+      console.log(`✅ Room created successfully: ${room.code}`);
+      console.log(`🎯 Host: ${hostPlayer.user.username} (${hostPlayer.id})`);
 
-      // Get updated room with all players
-      const updatedRoom = await RoomService.getRoomById(room.id);
-      const allPlayers = await PlayerService.getPlayersInRoom(room.id);
-
-      console.log(`📊 Room created with ${allPlayers.length} players`);
-
-      // Notify the creator
+      // Emit success response to the host
       socket.emit('room_created', {
         success: true,
-        room: updatedRoom,
+        room: {
+          id: room.id,
+          code: room.code,
+          name: room.name,
+          isPublic: room.isPublic,
+          maxPlayers: room.maxPlayers,
+          themeMode: room.themeMode,
+          playerCount: 1,
+          isActive: room.isActive,
+          createdAt: room.createdAt,
+        },
         player: {
           id: hostPlayer.id,
           userId: hostPlayer.userId,
-          username: hostPlayer.user.username,  // ✅ FIXED: Use user.username
+          username: hostPlayer.user.username,
           avatar: hostPlayer.user.avatar,
           isHost: hostPlayer.isHost,
           isOnline: hostPlayer.isOnline,
+          joinedAt: hostPlayer.joinedAt,
         },
-        players: allPlayers.map(p => ({
-          id: p.id,
-          userId: p.userId,
-          username: p.user.username,  // ✅ FIXED: Use user.username
-          avatar: p.user.avatar,
-          isHost: p.isHost,
-          isOnline: p.isOnline,
-          joinedAt: p.joinedAt,
-        })),
       });
 
-      // Update public rooms if this is a public room
-      if (isPublic) {
-        socket.broadcast.emit('public_rooms_updated');
-      }
-
-      logger.gameEvent('Room created', room.id, hostPlayer.userId, {
-        code: room.code,
-        isPublic: room.isPublic,
-        maxPlayers: room.maxPlayers,
-        hostUsername: hostPlayer.user.username,  // ✅ FIXED: Use user.username
+      logger.info('Room created successfully', {
+        roomId: room.id,
+        roomCode: room.code,
+        hostId: hostPlayer.id,
+        hostName: hostPlayer.user.username,
+        socketId: socket.id,
       });
 
     } catch (error) {
-      console.error('❌ Error creating room:', error);
-      logger.error('Failed to create room', { error, data, socketId: socket.id });
+      console.error('❌ Failed to create room:', error);
+      logger.error('Failed to create room', { error, socketId: socket.id });
       socket.emit('error', {
         message: 'Failed to create room',
         code: 'CREATE_ROOM_FAILED'
@@ -126,19 +116,19 @@ export class RoomEventsClass {
   }
 
   /**
-   * Handle joining room by code
+   * Handle room joining
    */
   private async handleJoinRoom(socket: Socket, data: {
     roomCode: string;
-    playerName?: string; // This will be ignored, we'll use authenticated user
+    userId?: string;
   }): Promise<void> {
     try {
       const { roomCode } = data;
-      
-      console.log(`🚪 Player joining room ${roomCode} from socket ${socket.id}`);
+      const userId = data.userId || socket.data.userId;
 
-      // Check if socket has authenticated user
-      if (!socket.data.userId) {
+      console.log(`🚪 Player attempting to join room: ${roomCode}`);
+
+      if (!userId) {
         socket.emit('error', {
           message: 'Authentication required to join room',
           code: 'AUTH_REQUIRED'
@@ -146,23 +136,21 @@ export class RoomEventsClass {
         return;
       }
 
-      // ✅ FIXED: Use canJoinRoom method
-      const roomCheck = await RoomService.canJoinRoom(roomCode.toUpperCase());
-      
-      if (!roomCheck.success) {
+      // Find room by code
+      const room = await RoomService.getRoomByCode(roomCode);
+      if (!room) {
         socket.emit('error', {
-          message: roomCheck.message || 'Cannot join room',
-          code: 'JOIN_ROOM_FAILED'
+          message: 'Room not found',
+          code: 'ROOM_NOT_FOUND'
         });
         return;
       }
 
-      const room = roomCheck.room!;
       console.log(`✅ Room ${roomCode} found, adding player...`);
 
-      // ✅ FIXED: Use userId instead of name
+      // Add player to room
       const player = await PlayerService.addPlayer({
-        userId: socket.data.userId,
+        userId: userId,
         roomId: room.id,
         socketId: socket.id,
         isHost: false,
@@ -170,12 +158,11 @@ export class RoomEventsClass {
 
       console.log(`✅ Player ${player.user.username} added with ID: ${player.id}`);
 
-      // Associate socket with player
+      // ✅ FIXED: Pass only 3 required parameters to associateSocketWithPlayer
       ConnectionHandler.associateSocketWithPlayer(
         socket, 
         player.id, 
-        room.id, 
-        player.user.username  // ✅ FIXED: Use user.username
+        room.id
       );
 
       // Join the socket room for real-time updates
@@ -195,7 +182,7 @@ export class RoomEventsClass {
         player: {
           id: player.id,
           userId: player.userId,
-          username: player.user.username,  // ✅ FIXED: Use user.username
+          username: player.user.username,
           avatar: player.user.avatar,
           isHost: player.isHost,
           isOnline: player.isOnline,
@@ -203,7 +190,7 @@ export class RoomEventsClass {
         players: allPlayers.map(p => ({
           id: p.id,
           userId: p.userId,
-          username: p.user.username,  // ✅ FIXED: Use user.username
+          username: p.user.username,
           avatar: p.user.avatar,
           isHost: p.isHost,
           isOnline: p.isOnline,
@@ -216,7 +203,7 @@ export class RoomEventsClass {
         player: {
           id: player.id,
           userId: player.userId,
-          username: player.user.username,  // ✅ FIXED: Use user.username
+          username: player.user.username,
           avatar: player.user.avatar,
           isHost: player.isHost,
           isOnline: player.isOnline,
@@ -231,7 +218,7 @@ export class RoomEventsClass {
         players: allPlayers.map(p => ({
           id: p.id,
           userId: p.userId,
-          username: p.user.username,  // ✅ FIXED: Use user.username
+          username: p.user.username,
           avatar: p.user.avatar,
           isHost: p.isHost,
           isOnline: p.isOnline,
@@ -239,22 +226,19 @@ export class RoomEventsClass {
         })),
       };
 
-      socket.emit('room_updated', roomUpdateData);
       socket.to(room.id).emit('room_updated', roomUpdateData);
 
-      // Update public rooms
-      if (room.isPublic) {
-        socket.broadcast.emit('public_rooms_updated');
-      }
-
-      logger.gameEvent('Player joined room', room.id, player.userId, {
-        playerName: player.user.username,  // ✅ FIXED: Use user.username
+      logger.info('Player joined room successfully', {
+        roomId: room.id,
         roomCode: room.code,
+        playerId: player.id,
+        playerName: player.user.username,
         totalPlayers: allPlayers.length,
+        socketId: socket.id,
       });
 
     } catch (error) {
-      console.error('❌ Error joining room:', error);
+      console.error('❌ Failed to join room:', error);
       logger.error('Failed to join room', { error, data, socketId: socket.id });
       socket.emit('error', {
         message: 'Failed to join room',
@@ -279,104 +263,77 @@ export class RoomEventsClass {
         return;
       }
 
-      console.log(`🚪 Player leaving room: ${roomId}, playerId: ${playerId}`);
+      console.log(`🚪 Player ${playerId} leaving room ${roomId}`);
 
-      // Get player info before removal
-      const player = await PlayerService.getPlayerById(playerId);
-      if (!player) {
-        socket.emit('error', {
-          message: 'Player not found',
-          code: 'PLAYER_NOT_FOUND'
-        });
-        return;
-      }
+      // Remove player from room
+      const removedPlayer = await PlayerService.removePlayer(playerId);
 
-      // ✅ FIXED: Use removePlayerWithDetails for complete info
-      const result = await PlayerService.removePlayerWithDetails(playerId);
-      
-      console.log(`🗑️ Player ${result.removedPlayer.user.username} removed from database`);
+      if (removedPlayer) {
+        // Leave socket room
+        socket.leave(roomId);
+        ConnectionHandler.removeSocketFromRoom(socket);
 
-      // Leave socket room
-      socket.leave(roomId);
-      
-      // Clear socket data
-      socket.data.playerId = undefined;
-      socket.data.roomId = undefined;
-      socket.data.playerName = undefined;
-
-      // Notify the leaving player
-      socket.emit('room_left', {
-        success: true,
-        message: 'Left room successfully',
-      });
-
-      // Get remaining players
-      const remainingPlayers = await PlayerService.getPlayersInRoom(roomId);
-
-      // Notify remaining players about the departure
-      socket.to(roomId).emit('player_left', {
-        playerId: result.removedPlayer.id,
-        userId: result.removedPlayer.userId,
-        playerName: result.removedPlayer.user.username,  // ✅ FIXED: Use user.username
-        reason: 'left',
-      });
-
-      console.log(`📢 Notified remaining players about ${result.removedPlayer.user.username} leaving`);
-
-      // Handle host transfer if needed
-      if (result.newHost) {
-        console.log(`👑 Host transferred to ${result.newHost.user.username}`);
-
-        // Notify about new host
-        socket.to(roomId).emit('host_changed', {
-          newHost: {
-            id: result.newHost.id,
-            username: result.newHost.user.username,  // ✅ FIXED: Use user.username
-          },
-          message: `${result.newHost.user.username} is now the host`
+        // Notify other players
+        socket.to(roomId).emit('player_left', {
+          playerId: removedPlayer.id,
+          playerName: removedPlayer.user.username,
+          reason: 'left_room',
         });
 
-        logger.gameEvent('Host transferred', roomId, result.newHost.id, {
-          previousHostId: result.removedPlayer.id,
-          newHostName: result.newHost.user.username,  // ✅ FIXED: Use user.username
-        });
-      }
+        // Check if room is empty or needs new host
+        const remainingPlayers = await PlayerService.getPlayersInRoom(roomId);
 
-      // Send updated room info to remaining players
-      if (remainingPlayers.length > 0) {
+        if (remainingPlayers.length === 0) {
+          // Room is empty, could be cleaned up
+          console.log(`🏠 Room ${roomId} is now empty`);
+        } else if (removedPlayer.isHost) {
+          // Transfer host to another player
+          const newHost = remainingPlayers[0];
+          await PlayerService.transferHost(roomId, removedPlayer.id, newHost.id);
+
+          // Notify all players about host change
+          socket.to(roomId).emit('host_changed', {
+            newHost: {
+              id: newHost.id,
+              name: newHost.user.username,
+            },
+            message: `${newHost.user.username} is now the host`,
+          });
+        }
+
+        // Send updated room info
         const updatedRoom = await RoomService.getRoomById(roomId);
-        const roomUpdateData = {
-          room: updatedRoom,
-          players: remainingPlayers.map(p => ({
-            id: p.id,
-            userId: p.userId,
-            username: p.user.username,  // ✅ FIXED: Use user.username
-            avatar: p.user.avatar,
-            isHost: p.isHost,
-            isOnline: p.isOnline,
-            joinedAt: p.joinedAt,
-          })),
-        };
+        if (updatedRoom) {
+          socket.to(roomId).emit('room_updated', {
+            room: updatedRoom,
+            players: remainingPlayers.map(p => ({
+              id: p.id,
+              userId: p.userId,
+              username: p.user.username,
+              avatar: p.user.avatar,
+              isHost: p.isHost,
+              isOnline: p.isOnline,
+            })),
+          });
+        }
 
-        socket.to(roomId).emit('room_updated', roomUpdateData);
+        socket.emit('room_left', {
+          success: true,
+          message: 'Left room successfully',
+        });
+
+        logger.info('Player left room successfully', {
+          roomId,
+          playerId: removedPlayer.id,
+          playerName: removedPlayer.user.username,
+          remainingPlayers: remainingPlayers.length,
+          socketId: socket.id,
+        });
       }
-
-      // Update public rooms
-      socket.broadcast.emit('public_rooms_updated');
-
-      // Log the departure
-      logger.gameEvent('Player left room', roomId, result.removedPlayer.userId, {
-        playerName: result.removedPlayer.user.username,  // ✅ FIXED: Use user.username
-        wasHost: result.removedPlayer.isHost,
-        newHostId: result.newHost?.id,
-        remainingPlayers: remainingPlayers.length,
-      });
-
-      console.log(`✅ Cleanup completed for player ${result.removedPlayer.user.username}`);
 
     } catch (error) {
-      console.error('❌ Error leaving room:', error);
-      logger.error('Failed to leave room', { error, socketId: socket.id });
+      console.error('❌ Failed to leave room:', error);
+      logger.error('Failed to leave room', { error, data, socketId: socket.id });
       socket.emit('error', {
         message: 'Failed to leave room',
         code: 'LEAVE_ROOM_FAILED'
@@ -385,7 +342,7 @@ export class RoomEventsClass {
   }
 
   /**
-   * Handle room settings update
+   * Handle room updates
    */
   private async handleUpdateRoom(socket: Socket, data: {
     roomId?: string;
@@ -395,7 +352,7 @@ export class RoomEventsClass {
     isPublic?: boolean;
   }): Promise<void> {
     try {
-      const roomId = data.roomId || socket.data.roomId;
+      const roomId = data?.roomId || socket.data.roomId;
       const playerId = socket.data.playerId;
 
       if (!roomId || !playerId) {
@@ -406,9 +363,7 @@ export class RoomEventsClass {
         return;
       }
 
-      console.log(`⚙️ Updating room ${roomId} settings:`, data);
-
-      // Check if player is host
+      // Verify player is host
       const player = await PlayerService.getPlayerById(playerId);
       if (!player || !player.isHost) {
         socket.emit('error', {
@@ -417,6 +372,8 @@ export class RoomEventsClass {
         });
         return;
       }
+
+      console.log(`⚙️ Host updating room ${roomId}:`, data);
 
       // Update room
       const updatedRoom = await RoomService.updateRoom(roomId, {
@@ -427,31 +384,30 @@ export class RoomEventsClass {
       });
 
       // Get all players
-      const allPlayers = await PlayerService.getPlayersInRoom(roomId);
+      const players = await PlayerService.getPlayersInRoom(roomId);
 
       // Broadcast update to all players in room
-      const roomUpdateData = {
+      const updateData = {
         room: updatedRoom,
-        players: allPlayers.map(p => ({
+        players: players.map(p => ({
           id: p.id,
           userId: p.userId,
-          username: p.user.username,  // ✅ FIXED: Use user.username
+          username: p.user.username,
           avatar: p.user.avatar,
           isHost: p.isHost,
           isOnline: p.isOnline,
-          joinedAt: p.joinedAt,
         })),
       };
 
-      socket.emit('room_updated', roomUpdateData);
-      socket.to(roomId).emit('room_updated', roomUpdateData);
+      socket.to(roomId).emit('room_updated', updateData);
+      socket.emit('room_updated', updateData);
 
-      // Update public rooms if this is a public room
-      if (updatedRoom.isPublic) {
-        socket.broadcast.emit('public_rooms_updated');
-      }
-
-      logger.gameEvent('Room updated', roomId, playerId, data);
+      logger.info('Room updated successfully', {
+        roomId,
+        hostId: player.id,
+        changes: data,
+        socketId: socket.id,
+      });
 
     } catch (error) {
       console.error('❌ Failed to update room:', error);
@@ -468,13 +424,20 @@ export class RoomEventsClass {
    */
   private async handleGetPublicRooms(socket: Socket): Promise<void> {
     try {
-      console.log(`📋 Getting public rooms for socket ${socket.id}`);
       const publicRooms = await RoomService.getPublicRooms();
-      console.log(`📊 Found ${publicRooms.length} public rooms`);
 
       socket.emit('public_rooms', {
         success: true,
-        rooms: publicRooms,
+        rooms: publicRooms.map(room => ({
+          id: room.id,
+          code: room.code,
+          name: room.name,
+          playerCount: room.playerCount,
+          maxPlayers: room.maxPlayers,
+          themeMode: room.themeMode,
+          isActive: room.isActive,
+          createdAt: room.createdAt,
+        })),
       });
 
     } catch (error) {
@@ -507,7 +470,7 @@ export class RoomEventsClass {
       const players = room.players.map(p => ({
         id: p.id,
         userId: p.userId,
-        username: p.user.username,  // ✅ FIXED: Use user.username
+        username: p.user.username,
         avatar: p.user.avatar,
         isHost: p.isHost,
         isOnline: p.isOnline,

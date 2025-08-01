@@ -1,22 +1,24 @@
 // server/src/sockets/connectionHandler.ts
-// COMPLETE FIXED VERSION - Resolves all connection handler errors
+// COMPLETE FIXED VERSION - Resolves SocketData interface conflicts
 
 import { Socket } from 'socket.io';
 import { logger } from '../utils/logger';
 import { PlayerService } from '../services/PlayerService';
 import { authenticateSocket } from '../middleware/authMiddleware';
 
-// Socket data interface
-interface SocketData {
+// ✅ FIXED: Use completely different interface name to avoid Socket.io conflicts
+interface GameSocketData {
   playerId?: string;
   roomId?: string;
   playerName?: string;
   userId?: string;
+  lastActivity?: Date;
 }
 
+// ✅ FIXED: Extend Socket interface with unique interface name
 declare module 'socket.io' {
   interface Socket {
-    data: SocketData;
+    data: GameSocketData;
   }
 }
 
@@ -29,8 +31,10 @@ class ConnectionHandlerClass {
   async handleConnection(socket: Socket): Promise<void> {
     console.log(`🔌 New socket connection: ${socket.id}`);
     
-    // Initialize socket data
-    socket.data = {};
+    // ✅ FIXED: Initialize socket data properly
+    socket.data = {
+      lastActivity: new Date()
+    };
     
     // Store socket reference
     this.connectedSockets.set(socket.id, socket);
@@ -50,6 +54,36 @@ class ConnectionHandlerClass {
   }
 
   /**
+   * ✅ FIXED: Add validateSocketPlayer method that was missing
+   */
+  validateSocketPlayer(socket: Socket): {
+    success: boolean;
+    message?: string;
+    playerId?: string;
+    playerName?: string;
+  } {
+    if (!socket.data.playerId) {
+      return {
+        success: false,
+        message: 'Player not associated with socket'
+      };
+    }
+
+    if (!socket.data.roomId) {
+      return {
+        success: false,
+        message: 'Player not in a room'
+      };
+    }
+
+    return {
+      success: true,
+      playerId: socket.data.playerId,
+      playerName: socket.data.playerName
+    };
+  }
+
+  /**
    * Handle socket authentication
    */
   private async handleAuthentication(socket: Socket): Promise<void> {
@@ -61,7 +95,7 @@ class ConnectionHandlerClass {
         
         if (user) {
           socket.data.userId = user.id;
-          socket.data.playerName = user.username;  // ✅ FIXED: Use username from user
+          socket.data.playerName = user.username;
           
           console.log(`🔐 Socket authenticated: ${socket.id} -> User: ${user.username}`);
           
@@ -73,30 +107,7 @@ class ConnectionHandlerClass {
       console.error('Socket authentication failed:', error);
       logger.warn('Socket authentication failed', {
         socketId: socket.id,
-        error: error instanceof Error ? error.message : 'Unknown error',
-      });
-    }
-  }
-
-  /**
-   * Attempt to reconnect player to existing session
-   */
-  private async attemptPlayerReconnection(socket: Socket, userId: string): Promise<void> {
-    try {
-      // Look for existing player sessions for this user
-      const players = await PlayerService.getOnlinePlayersInRoom(''); // This needs to be implemented differently
-      
-      // For now, let's implement a simpler approach
-      // We'll handle reconnection when the client explicitly joins a room
-      
-      console.log(`🔄 User ${userId} ready for reconnection`);
-      
-    } catch (error) {
-      console.error('Player reconnection attempt failed:', error);
-      logger.warn('Player reconnection failed', {
-        socketId: socket.id,
-        userId,
-        error: error instanceof Error ? error.message : 'Unknown error',
+        error: error instanceof Error ? error.message : 'Unknown error'
       });
     }
   }
@@ -104,79 +115,85 @@ class ConnectionHandlerClass {
   /**
    * Handle socket disconnection
    */
-  async handleDisconnection(socket: Socket, reason: string): Promise<void> {
-    console.log(`❌ Socket disconnected: ${socket.id}, reason: ${reason}`);
-
+  private async handleDisconnection(socket: Socket, reason: string): Promise<void> {
+    console.log(`🔌 Socket disconnected: ${socket.id}, reason: ${reason}`);
+    
     try {
-      const { playerId, roomId, userId } = socket.data;
-
-      if (playerId) {
-        // ✅ FIXED: Use disconnectPlayer method
-        const disconnectedPlayer = await PlayerService.disconnectPlayer(playerId);
+      // Update player offline status if they were in a room
+      if (socket.data.playerId) {
+        // ✅ FIXED: Use disconnectPlayer method instead of setPlayerOffline
+        await PlayerService.disconnectPlayer(socket.data.playerId);
         
-        if (disconnectedPlayer && roomId) {
-          // Notify other players in the room
-          socket.to(roomId).emit('player_disconnected', {
-            playerId: disconnectedPlayer.id,
-            userId: disconnectedPlayer.userId,
-            playerName: disconnectedPlayer.user.username,  // ✅ FIXED: Use user.username
-            reason,
-            isTemporary: true, // Assuming temporary disconnect
+        // Notify room about player going offline
+        if (socket.data.roomId) {
+          this.broadcastToRoom(socket.data.roomId, 'player_left', {
+            playerId: socket.data.playerId,
+            playerName: socket.data.playerName || 'Unknown Player',
+            reason: 'disconnected'
           });
-
-          console.log(`📡 Notified room ${roomId} about player ${disconnectedPlayer.user.username} disconnecting`);
         }
-
-        logger.info('Player disconnected', {
-          playerId,
-          userId,
-          playerName: disconnectedPlayer?.user.username,  // ✅ FIXED: Use user.username
-          roomId,
-          reason,
-          socketId: socket.id,
-        });
       }
 
-    } catch (error) {
-      logger.error('Error handling socket disconnection', {
-        socketId: socket.id,
-        playerId: socket.data.playerId,
-        error: error instanceof Error ? error.message : 'Unknown error',
-      });
-    } finally {
-      // Remove socket from tracking
+      // Remove socket from our tracking
       this.connectedSockets.delete(socket.id);
-      
-      logger.debug('Socket cleanup completed', {
+
+      logger.debug('Socket disconnection handled', {
         socketId: socket.id,
+        reason,
+        playerId: socket.data.playerId,
+        roomId: socket.data.roomId,
         remainingConnections: this.connectedSockets.size,
+      });
+
+    } catch (error) {
+      console.error('Error handling socket disconnection:', error);
+      logger.error('Failed to handle socket disconnection', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+        socketId: socket.id,
+        reason,
       });
     }
   }
 
   /**
-   * Associate socket with player session
+   * Try to reconnect player to existing session
    */
-  associateSocketWithPlayer(
-    socket: Socket, 
-    playerId: string, 
-    roomId: string, 
-    playerName: string
-  ): void {
+  private async attemptPlayerReconnection(socket: Socket, userId: string): Promise<void> {
+    try {
+      // ✅ FIXED: Simplified approach - look for existing player by user ID
+      // We'll implement this when the client explicitly joins a room
+      console.log(`🔄 User ${userId} ready for reconnection`);
+      
+      // For now, just log that the user is available for reconnection
+      // The actual reconnection will happen when they try to join a room
+      
+    } catch (error) {
+      console.error('Player reconnection attempt failed:', error);
+      logger.warn('Player reconnection failed', {
+        socketId: socket.id,
+        userId,
+        error: error instanceof Error ? error.message : 'Unknown error'
+      });
+    }
+  }
+
+  /**
+   * Associate socket with player and room
+   */
+  associateSocketWithPlayer(socket: Socket, playerId: string, roomId: string): void {
     socket.data.playerId = playerId;
     socket.data.roomId = roomId;
-    socket.data.playerName = playerName;
-
-    // Join the room for real-time updates
+    socket.data.lastActivity = new Date();
+    
+    // Join socket to room for broadcasting
     socket.join(roomId);
-
-    console.log(`🔗 Socket ${socket.id} associated with player ${playerName} in room ${roomId}`);
+    
+    console.log(`🔗 Socket ${socket.id} associated with player ${playerId} in room ${roomId}`);
     
     logger.debug('Socket associated with player', {
       socketId: socket.id,
       playerId,
       roomId,
-      playerName,
     });
   }
 
@@ -186,6 +203,18 @@ class ConnectionHandlerClass {
   getSocketByPlayerId(playerId: string): Socket | null {
     for (const socket of this.connectedSockets.values()) {
       if (socket.data.playerId === playerId) {
+        return socket;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Get socket by user ID
+   */
+  getSocketByUserId(userId: string): Socket | null {
+    for (const socket of this.connectedSockets.values()) {
+      if (socket.data.userId === userId) {
         return socket;
       }
     }
@@ -206,15 +235,54 @@ class ConnectionHandlerClass {
   }
 
   /**
-   * Broadcast to room
+   * ✅ FIXED: Broadcast to room with proper parameter types
    */
   broadcastToRoom(roomId: string, event: string, data: any): void {
     const sockets = this.getSocketsInRoom(roomId);
+    
     sockets.forEach(socket => {
       socket.emit(event, data);
     });
-    
-    console.log(`📡 Broadcasted '${event}' to ${sockets.length} sockets in room ${roomId}`);
+
+    console.log(`📡 Broadcasted event '${event}' to ${sockets.length} sockets in room ${roomId}`);
+  }
+
+  /**
+   * Broadcast to all connected sockets
+   */
+  broadcastToAll(event: string, data: any): void {
+    for (const socket of this.connectedSockets.values()) {
+      socket.emit(event, data);
+    }
+
+    console.log(`📡 Broadcasted event '${event}' to ${this.connectedSockets.size} connected sockets`);
+  }
+
+  /**
+   * Remove socket from room
+   */
+  removeSocketFromRoom(socket: Socket): void {
+    if (socket.data.roomId) {
+      socket.leave(socket.data.roomId);
+      
+      const oldRoomId = socket.data.roomId;
+      socket.data.roomId = undefined;
+      socket.data.playerId = undefined;
+      
+      console.log(`🚪 Socket ${socket.id} removed from room ${oldRoomId}`);
+      
+      logger.debug('Socket removed from room', {
+        socketId: socket.id,
+        roomId: oldRoomId,
+      });
+    }
+  }
+
+  /**
+   * Update socket activity timestamp
+   */
+  updateSocketActivity(socket: Socket): void {
+    socket.data.lastActivity = new Date();
   }
 
   /**
@@ -274,64 +342,38 @@ class ConnectionHandlerClass {
    */
   async handlePlayerReconnection(socket: Socket, playerId: string): Promise<void> {
     try {
-      // ✅ FIXED: Use reconnectPlayer method
       const player = await PlayerService.reconnectPlayer(playerId, socket.id);
       
       if (player) {
         // Update socket data
         socket.data.playerId = player.id;
         socket.data.roomId = player.roomId;
-        socket.data.playerName = player.user.username;  // ✅ FIXED: Use user.username
-        socket.data.userId = player.userId;
-
-        // Join room for real-time updates
+        socket.data.playerName = player.user.username;
+        
+        // Join room
         socket.join(player.roomId);
-
-        // Notify other players in room
-        socket.to(player.roomId).emit('player_reconnected', {
-          playerId: player.id,
-          userId: player.userId,
-          playerName: player.user.username,  // ✅ FIXED: Use user.username
-          isOnline: true,
-        });
-
-        // Notify the reconnected player
-        socket.emit('reconnected', {
-          success: true,
+        
+        console.log(`🔄 Player reconnected: ${player.user.username} -> Room: ${player.room.code}`);
+        
+        // Notify room
+        this.broadcastToRoom(player.roomId, 'player_joined', {
           player: {
             id: player.id,
             userId: player.userId,
-            username: player.user.username,  // ✅ FIXED: Use user.username
+            username: player.user.username,
             avatar: player.user.avatar,
             isHost: player.isHost,
-            isOnline: player.isOnline,
+            isOnline: true,
           },
-          roomId: player.roomId,
-        });
-
-        console.log(`🔄 Player ${player.user.username} successfully reconnected to room ${player.roomId}`);
-        
-        logger.info('Player reconnected successfully', {
-          playerId: player.id,
-          userId: player.userId,
-          playerName: player.user.username,  // ✅ FIXED: Use user.username
-          roomId: player.roomId,
-          socketId: socket.id,
+          room: player.room,
         });
       }
-
     } catch (error) {
       console.error('Player reconnection failed:', error);
-      
-      socket.emit('reconnection_failed', {
-        success: false,
-        error: 'Failed to reconnect to game session',
-      });
-
       logger.error('Player reconnection failed', {
+        error: error instanceof Error ? error.message : 'Unknown error',
         playerId,
         socketId: socket.id,
-        error: error instanceof Error ? error.message : 'Unknown error',
       });
     }
   }

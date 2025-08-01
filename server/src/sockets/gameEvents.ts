@@ -65,13 +65,11 @@ export class GameEventsClass {
 
       console.log(`🎯 Host ${player.user.username} starting game in room ${roomId}`);
 
-      // Start the game
+      // ✅ FIXED: Pass hostPlayerId as second parameter to startGame
       const gameWithPlayers = await GameService.startGame(roomId, playerId);
 
-      console.log(`✅ Game started with ${gameWithPlayers.players.length} players`);
-
-      // Prepare game start data
-      const gameStartData = {
+      // ✅ FIXED: Map players with correct data structure (no userId property from GameService)
+      ConnectionHandler.broadcastToRoom(roomId, 'game_started', {
         game: {
           id: gameWithPlayers.id,
           state: gameWithPlayers.state,
@@ -80,35 +78,18 @@ export class GameEventsClass {
         },
         players: gameWithPlayers.players.map(gamePlayer => ({
           id: gamePlayer.id,
-          userId: gamePlayer.userId,
-          username: gamePlayer.user.username,
-          avatar: gamePlayer.user.avatar,
+          name: gamePlayer.name,
           isHost: gamePlayer.isHost,
           isOnline: gamePlayer.isOnline,
-          isWordGiver: gamePlayer.isWordGiver,
           isImposter: gamePlayer.isImposter,
+          isWordGiver: gamePlayer.isWordGiver,
+          hasVoted: gamePlayer.hasVoted,
         })),
-      };
-
-      // ✅ FIXED: Broadcast with correct signature (3 parameters)
-      ConnectionHandler.broadcastToRoom(roomId, 'game_started', gameStartData);
-
-      // Send role assignments to individual players
-      for (const gamePlayer of gameWithPlayers.players) {
-        // ✅ FIXED: Use getSocketByPlayerId with single parameter
-        const playerSocket = ConnectionHandler.getSocketByPlayerId(gamePlayer.id);
-        if (playerSocket) {
-          playerSocket.emit('role_assigned', {
-            isWordGiver: gamePlayer.isWordGiver,
-            isImposter: gamePlayer.isImposter,
-          });
-        }
-      }
+      });
 
       logger.gameEvent('Game started', roomId, playerId, {
+        gameId: gameWithPlayers.id,
         totalPlayers: gameWithPlayers.players.length,
-        wordGiverId: gameWithPlayers.wordGiverId,
-        imposterId: gameWithPlayers.imposterId,
       });
 
     } catch (error) {
@@ -161,12 +142,11 @@ export class GameEventsClass {
         wordGiverId: gameWithPlayers.wordGiverId,
       };
 
-      // ✅ FIXED: Broadcast with correct signature (3 parameters)
+      // Broadcast game state change
       ConnectionHandler.broadcastToRoom(roomId, 'game_state_changed', gameStateData);
 
       // Send word to each player with their role
       for (const gamePlayer of gameWithPlayers.players) {
-        // ✅ FIXED: Use getSocketByPlayerId with single parameter
         const playerSocket = ConnectionHandler.getSocketByPlayerId(gamePlayer.id);
         if (playerSocket) {
           playerSocket.emit('word_revealed', {
@@ -177,7 +157,7 @@ export class GameEventsClass {
         }
       }
 
-      // ✅ FIXED: Broadcast with correct signature (3 parameters)
+      // Broadcast word submission event
       ConnectionHandler.broadcastToRoom(roomId, 'word_submitted', {
         wordGiverId: gameWithPlayers.wordGiverId,
         gameState: gameWithPlayers.state,
@@ -229,15 +209,14 @@ export class GameEventsClass {
       // Start voting phase
       const gameWithPlayers = await GameService.startVoting(roomId);
 
-      // ✅ FIXED: Broadcast with correct signature (3 parameters)
+      // ✅ FIXED: Map players with correct data structure (no userId property from GameService)
       ConnectionHandler.broadcastToRoom(roomId, 'voting_started', {
         gameState: gameWithPlayers.state,
         timeLimit: gameWithPlayers.timeLimit || 60,
         players: gameWithPlayers.players.map(p => ({
           id: p.id,
-          userId: p.userId,
-          username: p.user.username,
-          avatar: p.user.avatar,
+          name: p.name,
+          isHost: p.isHost,
           isOnline: p.isOnline,
         })),
       });
@@ -290,7 +269,7 @@ export class GameEventsClass {
       // Submit vote
       const gameWithPlayers = await GameService.submitVote(roomId, playerId, data.targetPlayerId);
 
-      // ✅ FIXED: Broadcast with correct signature (3 parameters)
+      // Broadcast vote submission
       ConnectionHandler.broadcastToRoom(roomId, 'vote_submitted', {
         playerId: playerId,
         hasVoted: true,
@@ -300,7 +279,6 @@ export class GameEventsClass {
 
       // Check if voting is complete and handle game end
       if (gameWithPlayers.state === 'RESULTS') {
-        // ✅ FIXED: Broadcast with correct signature (3 parameters)
         ConnectionHandler.broadcastToRoom(roomId, 'game_ended', {
           results: {
             winner: gameWithPlayers.winner,
@@ -355,17 +333,25 @@ export class GameEventsClass {
 
       console.log(`➡️ Starting next round in room ${roomId}`);
 
-      // Start next round
-      const gameWithPlayers = await GameService.nextRound(roomId);
+      // ✅ FIXED: Get current game first, then call startNextRound with gameId
+      const currentGame = await GameService.getCurrentGame(roomId);
+      if (!currentGame) {
+        socket.emit('error', {
+          message: 'No active game found in this room',
+          code: 'NO_ACTIVE_GAME'
+        });
+        return;
+      }
+
+      // Start next round using gameId
+      const gameWithPlayers = await GameService.startNextRound(currentGame.id);
 
       if (gameWithPlayers.state === 'COMPLETED') {
-        // ✅ FIXED: Broadcast with correct signature (3 parameters)
         ConnectionHandler.broadcastToRoom(roomId, 'game_completed', {
           gameState: gameWithPlayers.state,
           message: 'All players have had their turn. Game completed!',
         });
       } else {
-        // ✅ FIXED: Broadcast with correct signature (3 parameters)
         ConnectionHandler.broadcastToRoom(roomId, 'next_round_started', {
           gameState: gameWithPlayers.state,
           roundNumber: gameWithPlayers.roundNumber,
@@ -373,18 +359,19 @@ export class GameEventsClass {
         });
 
         // Notify new word giver
-        // ✅ FIXED: Use getSocketByPlayerId with single parameter
         const wordGiverSocket = ConnectionHandler.getSocketByPlayerId(gameWithPlayers.wordGiverId!);
         if (wordGiverSocket) {
           wordGiverSocket.emit('role_assigned', {
             isWordGiver: true,
             isImposter: false,
+            message: 'You are the word giver for this round!',
           });
         }
       }
 
       logger.gameEvent('Next round started', roomId, playerId, {
         roundNumber: gameWithPlayers.roundNumber,
+        wordGiverId: gameWithPlayers.wordGiverId,
         gameState: gameWithPlayers.state,
       });
 
@@ -439,7 +426,7 @@ export class GameEventsClass {
       // End the game
       const gameWithPlayers = await GameService.endGame(roomId);
 
-      // ✅ FIXED: Broadcast with correct signature (3 parameters)
+      // Broadcast game end
       ConnectionHandler.broadcastToRoom(roomId, 'game_ended', {
         gameState: gameWithPlayers.state,
         results: null,

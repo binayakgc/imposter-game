@@ -5,12 +5,12 @@ import { Router, Request, Response } from 'express';
 import { UserService } from '../services/UserService';
 import { logger } from '../utils/logger';
 import { AppError } from '../middleware/errorHandler';
-import { authenticate, optionalAuth } from '../middleware/authMiddleware';  // ✅ FIXED: Import correct exports
+import { authenticate, optionalAuth } from '../middleware/authMiddleware';
 import Joi from 'joi';
 
 const router = Router();
 
-// ✅ FIXED: Validation schemas
+// Validation schemas
 const registerSchema = Joi.object({
   username: Joi.string().min(2).max(20).required(),
   email: Joi.string().email().optional(),
@@ -40,28 +40,21 @@ router.post('/register', async (req: Request, res: Response) => {
 
     const { username, email, password, avatar } = value;
 
-    // ✅ FIXED: Use createUser method (not registerUser)
-    const result = await UserService.createUser({
-      username,
-      email,
-      password,
-      avatar,
-    });
+    // ✅ FIXED: Use correct parameter order for createUser (username, password, email)
+    const result = await UserService.createUser(username, password, email);
 
     logger.info('User registered successfully', {
-      userId: result.id,
-      username: result.username,
+      userId: result.user.id,
+      username: result.user.username,
     });
 
     res.status(201).json({
       success: true,
       message: 'User registered successfully',
-      user: {
-        id: result.id,
-        username: result.username,
-        email: result.email,
-        avatar: result.avatar,
-        createdAt: result.createdAt,
+      data: {
+        user: result.user,
+        token: result.token,
+        session: result.session,
       },
     });
 
@@ -102,7 +95,7 @@ router.post('/login', async (req: Request, res: Response) => {
 
     const { username, password } = value;
 
-    // ✅ FIXED: Pass individual parameters (not object)
+    // ✅ FIXED: Use correct parameter order for loginUser
     const result = await UserService.loginUser(username, password, req.headers['x-socket-id'] as string);
 
     logger.info('User logged in successfully', {
@@ -113,9 +106,11 @@ router.post('/login', async (req: Request, res: Response) => {
     res.json({
       success: true,
       message: 'Login successful',
-      user: result.user,
-      token: result.token,
-      session: result.session,
+      data: {
+        user: result.user,
+        token: result.token,
+        session: result.session,
+      },
     });
 
   } catch (error) {
@@ -143,7 +138,6 @@ router.post('/login', async (req: Request, res: Response) => {
  */
 router.get('/profile', authenticate, async (req: Request, res: Response) => {
   try {
-    // ✅ FIXED: Use req.user.id (not req.userId)
     const user = await UserService.getUserById(req.user!.id);
 
     if (!user) {
@@ -156,7 +150,9 @@ router.get('/profile', authenticate, async (req: Request, res: Response) => {
 
     res.json({
       success: true,
-      user,
+      data: {
+        user,
+      },
     });
 
   } catch (error) {
@@ -181,56 +177,29 @@ router.get('/profile', authenticate, async (req: Request, res: Response) => {
 });
 
 /**
- * Refresh session token
+ * Validate session token
  */
-router.post('/refresh', authenticate, async (req: Request, res: Response) => {
+router.get('/validate', authenticate, async (req: Request, res: Response) => {
   try {
-    const token = req.sessionToken!;
-    
-    // ✅ FIXED: Validate session returns UserWithSession, not session object
-    const user = await UserService.validateSession(token);
-    
-    if (!user) {
-      throw new AppError(
-        'Invalid session',
-        401,
-        'INVALID_SESSION'
-      );
-    }
-
-    // Create new session
-    const newSession = await UserService.loginUser(
-      user.username, 
-      '', // Password not needed for refresh
-      req.headers['x-socket-id'] as string
-    );
-
+    // If we reach here, authentication middleware has validated the token
     res.json({
       success: true,
-      message: 'Session refreshed',
-      user: newSession.user,
-      token: newSession.token,
-      session: newSession.session,
+      message: 'Session is valid',
+      data: {
+        user: req.user,
+      },
     });
 
   } catch (error) {
-    if (error instanceof AppError) {
-      res.status(error.statusCode).json({
-        success: false,
-        error: error.message,
-        code: error.errorCode,
-      });
-    } else {
-      logger.error('Session refresh failed', { 
-        error: error instanceof Error ? error.message : 'Unknown error',
-        userId: req.user?.id,
-      });
-      res.status(500).json({
-        success: false,
-        error: 'Session refresh failed',
-        code: 'REFRESH_ERROR',
-      });
-    }
+    logger.error('Session validation failed', { 
+      error: error instanceof Error ? error.message : 'Unknown error',
+      userId: req.user?.id,
+    });
+    res.status(500).json({
+      success: false,
+      error: 'Session validation failed',
+      code: 'VALIDATION_ERROR',
+    });
   }
 });
 
@@ -269,7 +238,7 @@ router.post('/logout', authenticate, async (req: Request, res: Response) => {
 /**
  * Check username availability
  */
-router.get('/check-username/:username', async (req: Request, res: Response) => {
+router.get('/username-available/:username', async (req: Request, res: Response) => {
   try {
     const { username } = req.params;
 
@@ -281,14 +250,15 @@ router.get('/check-username/:username', async (req: Request, res: Response) => {
       );
     }
 
-    // ✅ FIXED: Check if user exists (instead of isUsernameAvailable method)
-    const existingUser = await UserService.getUserByUsername(username);
-    const isAvailable = !existingUser;
+    // ✅ FIXED: Use isUsernameAvailable method from UserService
+    const isAvailable = await UserService.isUsernameAvailable(username);
 
     res.json({
       success: true,
-      available: isAvailable,
-      username,
+      data: {
+        available: isAvailable,
+        username,
+      },
     });
 
   } catch (error) {
@@ -334,6 +304,15 @@ router.put('/profile', authenticate, async (req: Request, res: Response) => {
 
     const updatedUser = await UserService.updateUserProfile(req.user!.id, value);
 
+    // ✅ FIXED: Handle null case for updatedUser
+    if (!updatedUser) {
+      throw new AppError(
+        'Failed to update user profile',
+        500,
+        'UPDATE_ERROR'
+      );
+    }
+
     logger.info('User profile updated', {
       userId: updatedUser.id,
       username: updatedUser.username,
@@ -342,7 +321,9 @@ router.put('/profile', authenticate, async (req: Request, res: Response) => {
     res.json({
       success: true,
       message: 'Profile updated successfully',
-      user: updatedUser,
+      data: {
+        user: updatedUser,
+      },
     });
 
   } catch (error) {
@@ -360,7 +341,57 @@ router.put('/profile', authenticate, async (req: Request, res: Response) => {
       res.status(500).json({
         success: false,
         error: 'Profile update failed',
-        code: 'PROFILE_UPDATE_ERROR',
+        code: 'UPDATE_ERROR',
+      });
+    }
+  }
+});
+
+/**
+ * Change password
+ */
+router.put('/change-password', authenticate, async (req: Request, res: Response) => {
+  try {
+    const changePasswordSchema = Joi.object({
+      currentPassword: Joi.string().required(),
+      newPassword: Joi.string().min(6).required(),
+    });
+
+    const { error, value } = changePasswordSchema.validate(req.body);
+    if (error) {
+      throw new AppError(
+        error.details[0].message,
+        400,
+        'VALIDATION_ERROR'
+      );
+    }
+
+    const { currentPassword, newPassword } = value;
+
+    // This would require implementing a changePassword method in UserService
+    // For now, return not implemented
+    res.status(501).json({
+      success: false,
+      error: 'Password change not implemented yet',
+      code: 'NOT_IMPLEMENTED',
+    });
+
+  } catch (error) {
+    if (error instanceof AppError) {
+      res.status(error.statusCode).json({
+        success: false,
+        error: error.message,
+        code: error.errorCode,
+      });
+    } else {
+      logger.error('Password change failed', { 
+        error: error instanceof Error ? error.message : 'Unknown error',
+        userId: req.user?.id,
+      });
+      res.status(500).json({
+        success: false,
+        error: 'Password change failed',
+        code: 'PASSWORD_CHANGE_ERROR',
       });
     }
   }
