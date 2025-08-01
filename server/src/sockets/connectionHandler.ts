@@ -6,19 +6,14 @@ import { logger } from '../utils/logger';
 import { PlayerService } from '../services/PlayerService';
 import { authenticateSocket } from '../middleware/authMiddleware';
 
-// ✅ FIXED: Use completely different interface name to avoid Socket.io conflicts
-interface GameSocketData {
-  playerId?: string;
-  roomId?: string;
-  playerName?: string;
-  userId?: string;
-  lastActivity?: Date;
-}
-
-// ✅ FIXED: Extend Socket interface with unique interface name
+// ✅ FIXED: Extend the existing SocketData interface instead of overriding
 declare module 'socket.io' {
-  interface Socket {
-    data: GameSocketData;
+  interface SocketData {
+    playerId?: string;
+    roomId?: string;
+    playerName?: string;
+    userId?: string;
+    lastActivity?: Date;
   }
 }
 
