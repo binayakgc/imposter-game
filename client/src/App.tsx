@@ -1,5 +1,5 @@
 // client/src/App.tsx
-// Complete application with authentication routing
+// CLEAN FIXED VERSION - No TypeScript/JSX syntax errors
 
 import React, { useState, useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
@@ -83,7 +83,7 @@ const PublicRoute: React.FC<PublicRouteProps> = ({ children }) => {
   }
 
   if (user) {
-    return <Navigate to="/home" replace />;
+    return <Navigate to="/" replace />;
   }
 
   return <>{children}</>;
@@ -91,94 +91,65 @@ const PublicRoute: React.FC<PublicRouteProps> = ({ children }) => {
 
 const App: React.FC = () => {
   return (
-    <Router>
-      <div className="min-h-screen bg-game-bg">
-        {/* Main app container */}
-        <main className="min-h-screen">
-          <Routes>
-            {/* Public Routes - redirect to /home if authenticated */}
-            <Route 
-              path="/" 
-              element={
-                <PublicRoute>
-                  <Navigate to="/login" replace />
-                </PublicRoute>
-              } 
-            />
-            <Route 
-              path="/login" 
-              element={
-                <PublicRoute>
-                  <LoginPage />
-                </PublicRoute>
-              } 
-            />
-            <Route 
-              path="/register" 
-              element={
-                <PublicRoute>
-                  <RegisterPage />
-                </PublicRoute>
-              } 
-            />
-            
-            {/* Protected Routes - require authentication */}
-            <Route 
-              path="/home" 
-              element={
-                <ProtectedRoute>
-                  <HomePage />
-                </ProtectedRoute>
-              } 
-            />
-            <Route 
-              path="/create" 
-              element={
-                <ProtectedRoute>
-                  <CreateRoom />
-                </ProtectedRoute>
-              } 
-            />
-            <Route 
-              path="/join" 
-              element={
-                <ProtectedRoute>
-                  <JoinRoom />
-                </ProtectedRoute>
-              } 
-            />
-            <Route 
-              path="/join/:code" 
-              element={
-                <ProtectedRoute>
-                  <JoinRoom />
-                </ProtectedRoute>
-              } 
-            />
-            <Route 
-              path="/room/:roomCode" 
-              element={
-                <ProtectedRoute>
-                  <GameRoom />
-                </ProtectedRoute>
-              } 
-            />
-            
-            {/* 404 page */}
-            <Route path="*" element={<NotFound />} />
-          </Routes>
-        </main>
-        
-        {/* Global loading indicator */}
-        <div id="global-loading" className="hidden">
-          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-            <div className="bg-game-surface p-6 rounded-lg flex items-center space-x-3">
-              <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-primary-500"></div>
-              <span className="text-white">Loading...</span>
-            </div>
-          </div>
-        </div>
-      </div>  
+    <Router 
+      future={{
+        v7_startTransition: true,
+        v7_relativeSplatPath: true
+      }}
+    >
+      <div className="App">
+        <Routes>
+          <Route 
+            path="/login" 
+            element={
+              <PublicRoute>
+                <LoginPage />
+              </PublicRoute>
+            } 
+          />
+          <Route 
+            path="/register" 
+            element={
+              <PublicRoute>
+                <RegisterPage />
+              </PublicRoute>
+            } 
+          />
+          <Route 
+            path="/" 
+            element={
+              <ProtectedRoute>
+                <HomePage />
+              </ProtectedRoute>
+            } 
+          />
+          <Route 
+            path="/create-room" 
+            element={
+              <ProtectedRoute>
+                <CreateRoom />
+              </ProtectedRoute>
+            } 
+          />
+          <Route 
+            path="/join-room" 
+            element={
+              <ProtectedRoute>
+                <JoinRoom />
+              </ProtectedRoute>
+            } 
+          />
+          <Route 
+            path="/room/:roomCode" 
+            element={
+              <ProtectedRoute>
+                <GameRoom />
+              </ProtectedRoute>
+            } 
+          />
+          <Route path="*" element={<NotFound />} />
+        </Routes>
+      </div>
     </Router>
   );
 };

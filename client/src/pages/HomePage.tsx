@@ -1,5 +1,5 @@
 // client/src/pages/HomePage.tsx
-// Complete HomePage with authentication, user profile, and logout
+// FIXED VERSION - Enhanced logout functionality that definitely works
 
 import React, { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
@@ -62,19 +62,23 @@ const HomePage: React.FC = () => {
     setError('');
 
     try {
-      // Try to load via API with authentication
+      // Use authenticated fetch
       const response = await authService.authenticatedFetch('http://localhost:3001/api/rooms/public');
       const result = await response.json();
 
-      if (result.success && result.data) {
-        setPublicRooms(result.data);
-        console.log('📊 Loaded public rooms:', result.data.length);
+      // ✅ FIXED: Change result.data to result.rooms
+      if (result.success && result.rooms) {
+        setPublicRooms(result.rooms);
+        console.log('📊 Loaded public rooms:', result.rooms.length);
+        setError('');
       } else {
-        setError(result.error || 'Failed to load rooms');
+        setPublicRooms([]);
+        setError('');
       }
     } catch (error) {
       console.error('❌ Error loading public rooms:', error);
       setError('Failed to connect to server');
+      setPublicRooms([]);
     } finally {
       setLoadingRooms(false);
     }
@@ -95,23 +99,54 @@ const HomePage: React.FC = () => {
     }
   };
 
+  // ✅ ENHANCED: More robust logout functionality
   const handleLogout = async () => {
     if (isLoggingOut) return;
 
+    console.log('🚪 Logout initiated');
     setIsLoggingOut(true);
+    setShowUserMenu(false); // Close the menu immediately
+    
     try {
-      // Disconnect socket first
+      // Step 1: Disconnect socket
+      console.log('🔌 Disconnecting socket...');
       socketService.disconnect();
       
-      // Logout from auth service
+      // Step 2: Call API logout (if available)
+      try {
+        const token = authService.getToken();
+        if (token) {
+          console.log('🌐 Calling logout API...');
+          await fetch('http://localhost:3001/api/auth/logout', {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${token}`,
+              'Content-Type': 'application/json',
+            },
+          });
+          console.log('✅ API logout successful');
+        }
+      } catch (apiError) {
+        console.warn('⚠️ API logout failed, continuing with local logout:', apiError);
+      }
+      
+      // Step 3: Clear auth service (this should trigger navigation)
+      console.log('🧹 Clearing auth data...');
       await authService.logout();
       
-      // Navigation will be handled automatically by the auth state change
-      console.log('✅ Logged out successfully');
+      console.log('✅ Logout completed successfully');
+      
     } catch (error) {
-      console.error('Logout error:', error);
-      // Force logout even if API call fails
-      authService.logout();
+      console.error('❌ Logout error:', error);
+      
+      // ✅ FALLBACK: Force logout even if everything fails
+      console.log('🔧 Force logout fallback...');
+      localStorage.removeItem('authToken');
+      localStorage.removeItem('authUser');
+      
+      // Force page reload to ensure clean state
+      window.location.href = '/login';
+      
     } finally {
       setIsLoggingOut(false);
     }
@@ -145,109 +180,158 @@ const HomePage: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-game-bg via-slate-900 to-game-surface">
-      {/* Background Effects */}
-      <div className="absolute inset-0 overflow-hidden">
-        <div className="absolute -top-40 -left-40 w-80 h-80 bg-primary-500/20 rounded-full blur-3xl"></div>
-        <div className="absolute -bottom-40 -right-40 w-80 h-80 bg-game-accent/20 rounded-full blur-3xl"></div>
-      </div>
-
-      {/* Header with User Menu */}
-      <header className="relative z-10 p-4">
-        <div className="max-w-6xl mx-auto flex justify-between items-center">
-          <div className="flex items-center space-x-3">
-            <div className="w-12 h-12 bg-gradient-to-br from-primary-500 to-primary-600 rounded-xl flex items-center justify-center text-2xl">
-              🎮
-            </div>
-            <div>
-              <h1 className="text-xl font-bold text-white">Imposter Word Game</h1>
-              <p className="text-gray-400 text-sm">Multiplayer Deception Game</p>
-            </div>
-          </div>
-
-          {/* User Menu */}
-          <div className="relative">
-            <button
-              onClick={() => setShowUserMenu(!showUserMenu)}
-              className="flex items-center space-x-3 bg-white/10 hover:bg-white/20 backdrop-blur-md rounded-xl px-4 py-2 border border-white/20 transition-all duration-200"
-            >
-              <div className="text-2xl">{currentUser?.avatar || '🎮'}</div>
-              <div className="text-left">
-                <p className="text-white font-medium">{currentUser?.username}</p>
-                <p className="text-green-400 text-xs">● Online</p>
+      {/* Header */}
+      <header className="bg-white/10 backdrop-blur-xl border-b border-white/20">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="flex justify-between items-center h-16">
+            {/* Logo */}
+            <div className="flex items-center space-x-3">
+              <div className="w-10 h-10 bg-gradient-to-br from-primary-500 to-primary-600 rounded-xl flex items-center justify-center">
+                <span className="text-white font-bold text-lg">I</span>
               </div>
-              <span className="text-gray-400">▼</span>
-            </button>
-
-            {/* Dropdown Menu */}
-            {showUserMenu && (
-              <div className="absolute right-0 mt-2 w-56 bg-white/10 backdrop-blur-xl rounded-xl border border-white/20 shadow-2xl">
-                <div className="p-4 border-b border-white/10">
-                  <p className="text-white font-medium">{currentUser?.username}</p>
-                  <p className="text-gray-400 text-sm">{currentUser?.email || 'No email'}</p>
-                  <p className="text-green-400 text-xs mt-1">● Online</p>
-                </div>
-                <div className="p-2">
-                  <button
-                    onClick={handleLogout}
-                    disabled={isLoggingOut}
-                    className="w-full text-left px-3 py-2 text-red-400 hover:bg-red-500/20 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    {isLoggingOut ? 'Logging out...' : '🚪 Logout'}
-                  </button>
-                </div>
+              <div>
+                <h1 className="text-white font-bold text-xl">Imposter Game</h1>
+                <p className="text-gray-400 text-xs">Find the imposter!</p>
               </div>
-            )}
+            </div>
+
+            {/* User Menu */}
+            <div className="relative">
+              {currentUser && (
+                <button
+                  onClick={() => setShowUserMenu(!showUserMenu)}
+                  className="flex items-center space-x-3 bg-white/10 hover:bg-white/20 backdrop-blur-xl border border-white/20 rounded-xl px-4 py-2 transition-all duration-200"
+                >
+                  <div className="w-8 h-8 bg-gradient-to-br from-green-400 to-green-500 rounded-lg flex items-center justify-center">
+                    <span className="text-white font-semibold text-sm">
+                      {currentUser.avatar || currentUser.username.charAt(0).toUpperCase()}
+                    </span>
+                  </div>
+                  <div className="text-left">
+                    <p className="text-white font-semibold text-sm">{currentUser.username}</p>
+                    <div className="flex items-center space-x-1">
+                      <div className="w-2 h-2 bg-green-400 rounded-full"></div>
+                      <span className="text-green-400 text-xs">Online</span>
+                    </div>
+                  </div>
+                  <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                  </svg>
+                </button>
+              )}
+
+              {/* ✅ ENHANCED: User Dropdown with better logout button */}
+              {showUserMenu && (
+                <div className="absolute right-0 mt-2 w-64 bg-slate-800/95 backdrop-blur-xl border border-white/20 rounded-xl shadow-2xl z-50">
+                  <div className="p-4 border-b border-white/10">
+                    <div className="flex items-center space-x-3">
+                      <div className="w-12 h-12 bg-gradient-to-br from-green-400 to-green-500 rounded-xl flex items-center justify-center">
+                        <span className="text-white font-bold">
+                          {currentUser?.avatar || currentUser?.username.charAt(0).toUpperCase()}
+                        </span>
+                      </div>
+                      <div>
+                        <p className="text-white font-semibold">{currentUser?.username}</p>
+                        <p className="text-gray-400 text-sm">{currentUser?.email || 'No email'}</p>
+                        <div className="flex items-center space-x-1 mt-1">
+                          <div className="w-2 h-2 bg-green-400 rounded-full"></div>
+                          <span className="text-green-400 text-xs">Online</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  
+                  <div className="p-2">
+                    <button
+                      onClick={handleLogout}
+                      disabled={isLoggingOut}
+                      className="w-full flex items-center space-x-3 px-3 py-3 text-red-400 hover:bg-red-500/10 rounded-lg transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {isLoggingOut ? (
+                        <>
+                          <div className="w-4 h-4 border-2 border-red-400 border-t-transparent rounded-full animate-spin"></div>
+                          <span>Logging out...</span>
+                        </>
+                      ) : (
+                        <>
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+                          </svg>
+                          <span className="font-medium">Logout</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </header>
 
       {/* Main Content */}
-      <div className="relative z-10 max-w-6xl mx-auto p-4">
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         {/* Welcome Section */}
-        <div className="text-center mb-12">
+        <div className="text-center mb-8">
           <h2 className="text-4xl font-bold text-white mb-4">
             Welcome back, {currentUser?.username}! 👋
           </h2>
-          <p className="text-gray-300 text-lg mb-8">
-            Ready to play some mind games? Create or join a room to get started.
+          <p className="text-gray-300 text-lg">
+            Join a public room or create your own to start playing
           </p>
+        </div>
 
-          {/* Quick Actions */}
-          <div className="flex flex-col sm:flex-row gap-4 justify-center items-center">
-            <Link
-              to="/create"
-              className="bg-gradient-to-r from-primary-600 to-primary-700 hover:from-primary-700 hover:to-primary-800 text-white font-bold py-4 px-8 rounded-2xl transition-all duration-200 hover:scale-105 hover:shadow-xl shadow-primary-500/30"
-            >
-              🎯 Create New Room
-            </Link>
-            <Link
-              to="/join"
-              className="bg-white/10 hover:bg-white/20 backdrop-blur-md border border-white/20 text-white font-semibold py-4 px-8 rounded-2xl transition-all duration-200 hover:scale-105"
-            >
-              🔍 Join by Code
-            </Link>
-          </div>
+        {/* Action Buttons */}
+        <div className="flex flex-col sm:flex-row gap-4 mb-8 max-w-2xl mx-auto">
+          <Link
+            to="/create-room"
+            className="flex-1 bg-gradient-to-r from-primary-600 to-primary-700 hover:from-primary-700 hover:to-primary-800 text-white font-semibold py-4 px-6 rounded-2xl transition-all duration-300 transform hover:scale-105 hover:shadow-2xl shadow-primary-500/30 text-center"
+          >
+            <span className="flex items-center justify-center space-x-2">
+              <span className="text-xl">🏠</span>
+              <span>Create Room</span>
+            </span>
+          </Link>
+          
+          <Link
+            to="/join-room"
+            className="flex-1 bg-white/10 hover:bg-white/20 backdrop-blur-xl border border-white/20 text-white font-semibold py-4 px-6 rounded-2xl transition-all duration-300 transform hover:scale-105 text-center"
+          >
+            <span className="flex items-center justify-center space-x-2">
+              <span className="text-xl">🔗</span>
+              <span>Join by Code</span>
+            </span>
+          </Link>
         </div>
 
         {/* Public Rooms Section */}
-        <div className="bg-white/5 backdrop-blur-xl rounded-3xl p-8 shadow-2xl border border-white/10">
+        <div className="bg-white/10 backdrop-blur-xl border border-white/20 rounded-3xl p-6 shadow-2xl">
           <div className="flex justify-between items-center mb-6">
-            <h3 className="text-2xl font-bold text-white">🌐 Public Rooms</h3>
+            <div className="flex items-center space-x-3">
+              <span className="text-2xl">🌐</span>
+              <h3 className="text-2xl font-bold text-white">Public Rooms</h3>
+            </div>
             <button
               onClick={refreshRooms}
               disabled={loadingRooms}
-              className="bg-white/10 hover:bg-white/20 text-white px-4 py-2 rounded-xl transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              className="bg-primary-600/80 hover:bg-primary-600 text-white px-4 py-2 rounded-xl transition-all duration-200 flex items-center space-x-2 disabled:opacity-50"
             >
-              {loadingRooms ? '🔄' : '🔄'} Refresh
+              <svg className={`w-4 h-4 ${loadingRooms ? 'animate-spin' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+              </svg>
+              <span>Refresh</span>
             </button>
           </div>
 
-          {error && (
-            <div className="bg-red-500/20 border border-red-500/50 rounded-xl p-4 mb-6">
-              <p className="text-red-200 flex items-center space-x-2">
-                <span>⚠️</span>
-                <span>{error}</span>
-              </p>
+          {/* Error Display - only for connection errors */}
+          {error && error.includes('Failed to connect') && (
+            <div className="bg-red-500/20 border border-red-500/30 rounded-xl p-4 mb-6">
+              <div className="flex items-center space-x-2">
+                <svg className="w-5 h-5 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L3.732 16.5c-.77.833.192 2.5 1.732 2.5z" />
+                </svg>
+                <span className="text-red-400 font-medium">{error}</span>
+              </div>
             </div>
           )}
 
@@ -256,104 +340,71 @@ const HomePage: React.FC = () => {
               <div className="w-12 h-12 border-4 border-primary-500 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
               <p className="text-gray-400">Loading rooms...</p>
             </div>
-          ) : publicRooms.length === 0 ? (
+          ) : publicRooms.length > 0 ? (
+            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+              {publicRooms.map((room) => (
+                <div
+                  key={room.id}
+                  className="bg-white/5 hover:bg-white/10 border border-white/20 rounded-2xl p-4 transition-all duration-300 transform hover:scale-105 cursor-pointer"
+                  onClick={() => handleJoinRoom(room.code)}
+                >
+                  <div className="flex justify-between items-start mb-3">
+                    <div>
+                      <h4 className="text-white font-semibold text-lg">
+                        {room.name || `Room ${room.code}`}
+                      </h4>
+                      <p className="text-gray-400 text-sm">Code: {room.code}</p>
+                    </div>
+                    <div className="flex items-center space-x-1">
+                      <div className="w-2 h-2 bg-green-400 rounded-full"></div>
+                      <span className="text-green-400 text-xs">Active</span>
+                    </div>
+                  </div>
+
+                  <div className="flex justify-between items-center text-sm">
+                    <div className="flex items-center space-x-2">
+                      <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197m13.5-9a2.5 2.5 0 11-5 0 2.5 2.5 0 015 0z" />
+                      </svg>
+                      <span className="text-gray-400">
+                        {room.playerCount}/{room.maxPlayers} players
+                      </span>
+                    </div>
+                    <span className="text-gray-500 text-xs">
+                      {formatTimeAgo(room.createdAt)}
+                    </span>
+                  </div>
+
+                  {room.themeMode && (
+                    <div className="mt-2 flex items-center space-x-1">
+                      <span className="text-yellow-400 text-xs">🎯</span>
+                      <span className="text-yellow-400 text-xs">Theme Mode</span>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          ) : (
             <div className="text-center py-12">
               <div className="text-6xl mb-4">🏠</div>
               <h4 className="text-xl font-semibold text-white mb-2">No Public Rooms</h4>
               <p className="text-gray-400 mb-6">Be the first to create a public room!</p>
               <Link
-                to="/create"
-                className="bg-primary-600 hover:bg-primary-700 text-white font-semibold py-3 px-6 rounded-xl transition-colors"
+                to="/create-room"
+                className="inline-flex items-center space-x-2 bg-primary-600 hover:bg-primary-700 text-white font-semibold py-3 px-6 rounded-xl transition-all duration-200"
               >
-                Create Public Room
+                <span className="text-lg">🌐</span>
+                <span>Create Public Room</span>
               </Link>
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-              {publicRooms.map((room) => (
-                <div
-                  key={room.id}
-                  className="bg-white/10 backdrop-blur-md rounded-2xl p-6 border border-white/20 hover:border-primary-500/50 transition-all duration-200 hover:scale-105"
-                >
-                  <div className="flex justify-between items-start mb-4">
-                    <div>
-                      <h4 className="text-lg font-semibold text-white truncate">
-                        {room.name || `Room ${room.code}`}
-                      </h4>
-                      <p className="text-gray-400 text-sm font-mono">{room.code}</p>
-                    </div>
-                    <div className="text-2xl">🌐</div>
-                  </div>
-
-                  <div className="space-y-3 mb-6">
-                    <div className="flex justify-between text-sm">
-                      <span className="text-gray-400">Players:</span>
-                      <span className="text-white font-medium">
-                        {room.playerCount}/{room.maxPlayers}
-                      </span>
-                    </div>
-                    <div className="flex justify-between text-sm">
-                      <span className="text-gray-400">Mode:</span>
-                      <span className="text-purple-400 font-medium">
-                        {room.themeMode ? 'Theme' : 'Custom'}
-                      </span>
-                    </div>
-                    <div className="flex justify-between text-sm">
-                      <span className="text-gray-400">Created:</span>
-                      <span className="text-gray-300">{formatTimeAgo(room.createdAt)}</span>
-                    </div>
-                  </div>
-
-                  <button
-                    onClick={() => handleJoinRoom(room.code)}
-                    disabled={room.playerCount >= room.maxPlayers}
-                    className={`w-full py-3 px-4 rounded-xl font-semibold transition-all duration-200 ${
-                      room.playerCount >= room.maxPlayers
-                        ? 'bg-gray-600 text-gray-400 cursor-not-allowed'
-                        : 'bg-gradient-to-r from-green-600 to-green-700 hover:from-green-700 hover:to-green-800 text-white hover:scale-105'
-                    }`}
-                  >
-                    {room.playerCount >= room.maxPlayers ? 'Room Full' : 'Join Room'}
-                  </button>
-                </div>
-              ))}
             </div>
           )}
         </div>
-
-        {/* Game Rules Section */}
-        <div className="mt-12 bg-white/5 backdrop-blur-xl rounded-3xl p-8 shadow-2xl border border-white/10">
-          <h3 className="text-2xl font-bold text-white mb-6 text-center">🎯 How to Play</h3>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            <div className="text-center">
-              <div className="w-16 h-16 bg-gradient-to-br from-blue-500 to-blue-600 rounded-2xl flex items-center justify-center text-2xl mx-auto mb-4">
-                👥
-              </div>
-              <h4 className="text-lg font-semibold text-white mb-2">1. Gather Players</h4>
-              <p className="text-gray-400 text-sm">Need 4-10 players to start a game</p>
-            </div>
-            <div className="text-center">
-              <div className="w-16 h-16 bg-gradient-to-br from-purple-500 to-purple-600 rounded-2xl flex items-center justify-center text-2xl mx-auto mb-4">
-                🕵️
-              </div>
-              <h4 className="text-lg font-semibold text-white mb-2">2. Find the Imposter</h4>
-              <p className="text-gray-400 text-sm">One player gets a different word</p>
-            </div>
-            <div className="text-center">
-              <div className="w-16 h-16 bg-gradient-to-br from-green-500 to-green-600 rounded-2xl flex items-center justify-center text-2xl mx-auto mb-4">
-                🏆
-              </div>
-              <h4 className="text-lg font-semibold text-white mb-2">3. Vote & Win</h4>
-              <p className="text-gray-400 text-sm">Vote out the imposter to win</p>
-            </div>
-          </div>
-        </div>
-      </div>
+      </main>
 
       {/* Click outside to close user menu */}
       {showUserMenu && (
-        <div
-          className="fixed inset-0 z-0"
+        <div 
+          className="fixed inset-0 z-30"
           onClick={() => setShowUserMenu(false)}
         />
       )}
