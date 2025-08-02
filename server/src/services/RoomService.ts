@@ -1,10 +1,10 @@
 // server/src/services/RoomService.ts
 // COMPLETE FIXED VERSION - Resolves all TypeScript errors
 
-import { prisma } from '../config/database';
-import { logger } from '../utils/logger';
-import { AppError } from '../middleware/errorHandler';
-import { generateRoomCode, sanitizeString } from '../utils/helpers';
+import { prisma } from "../config/database";
+import { logger } from "../utils/logger";
+import { AppError } from "../middleware/errorHandler";
+import { generateRoomCode, sanitizeString } from "../utils/helpers";
 
 // ✅ FIXED: Complete HTTP status constants
 const HTTP_STATUS = {
@@ -15,15 +15,15 @@ const HTTP_STATUS = {
   FORBIDDEN: 403,
   NOT_FOUND: 404,
   CONFLICT: 409,
-  INTERNAL_SERVER_ERROR: 500,  // ✅ FIXED: Added missing constant
+  INTERNAL_SERVER_ERROR: 500, // ✅ FIXED: Added missing constant
 } as const;
 
 const ERROR_CODES = {
-  ROOM_NOT_FOUND: 'ROOM_NOT_FOUND',
-  ROOM_CODE_TAKEN: 'ROOM_CODE_TAKEN',
-  VALIDATION_ERROR: 'VALIDATION_ERROR',
-  USER_NOT_FOUND: 'USER_NOT_FOUND',
-  ROOM_CREATION_FAILED: 'ROOM_CREATION_FAILED',
+  ROOM_NOT_FOUND: "ROOM_NOT_FOUND",
+  ROOM_CODE_TAKEN: "ROOM_CODE_TAKEN",
+  VALIDATION_ERROR: "VALIDATION_ERROR",
+  USER_NOT_FOUND: "USER_NOT_FOUND",
+  ROOM_CREATION_FAILED: "ROOM_CREATION_FAILED",
 } as const;
 
 // Updated interfaces to match User auth schema
@@ -67,16 +67,22 @@ class RoomServiceClass {
    * Create a new room with host player
    */
   async createRoom(params: CreateRoomParams): Promise<RoomWithPlayerCount> {
-    const { hostUserId, name, isPublic = false, maxPlayers = 10, themeMode = false } = params;
+    const {
+      hostUserId,
+      name,
+      isPublic = false,
+      maxPlayers = 10,
+      themeMode = false,
+    } = params;
 
     // ✅ FIXED: Verify user exists first
     const user = await prisma.user.findUnique({
-      where: { id: hostUserId }
+      where: { id: hostUserId },
     });
 
     if (!user) {
       throw new AppError(
-        'User not found',
+        "User not found",
         HTTP_STATUS.NOT_FOUND,
         ERROR_CODES.USER_NOT_FOUND
       );
@@ -85,11 +91,11 @@ class RoomServiceClass {
     // Generate unique room code
     let roomCode = generateRoomCode();
     let codeExists = true;
-    
+
     // Ensure unique code
     while (codeExists) {
       const existingRoom = await prisma.room.findUnique({
-        where: { code: roomCode }
+        where: { code: roomCode },
       });
       codeExists = !!existingRoom;
       if (codeExists) {
@@ -109,7 +115,7 @@ class RoomServiceClass {
             maxPlayers,
             themeMode,
             isActive: true,
-          }
+          },
         });
 
         // ✅ FIXED: Create host player using userId (matches schema)
@@ -127,36 +133,41 @@ class RoomServiceClass {
                 id: true,
                 username: true,
                 avatar: true,
-              }
-            }
-          }
+              },
+            },
+          },
         });
 
         return { room, hostPlayer };
       });
 
       // ✅ FIXED: Log with correct user data structure
-      logger.gameEvent('Room created', result.room.id, result.hostPlayer.userId, {
-        code: result.room.code,
-        isPublic: result.room.isPublic,
-        maxPlayers: result.room.maxPlayers,
-        hostUsername: result.hostPlayer.user.username,
-      });
+      logger.gameEvent(
+        "Room created",
+        result.room.id,
+        result.hostPlayer.userId,
+        {
+          code: result.room.code,
+          isPublic: result.room.isPublic,
+          maxPlayers: result.room.maxPlayers,
+          hostUsername: result.hostPlayer.user.username,
+        }
+      );
 
       return {
         ...result.room,
         playerCount: 1,
       };
-
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Room creation failed';
-      logger.error('Failed to create room', { 
-        error: errorMessage, 
-        params 
+      const errorMessage =
+        error instanceof Error ? error.message : "Room creation failed";
+      logger.error("Failed to create room", {
+        error: errorMessage,
+        params,
       });
       throw new AppError(
-        'Failed to create room',
-        HTTP_STATUS.INTERNAL_SERVER_ERROR,  // ✅ FIXED: Use proper constant
+        "Failed to create room",
+        HTTP_STATUS.INTERNAL_SERVER_ERROR, // ✅ FIXED: Use proper constant
         ERROR_CODES.ROOM_CREATION_FAILED
       );
     }
@@ -171,9 +182,9 @@ class RoomServiceClass {
         where: { id: roomId },
         include: {
           _count: {
-            select: { players: true }
-          }
-        }
+            select: { players: true },
+          },
+        },
       });
 
       if (!room) {
@@ -192,12 +203,12 @@ class RoomServiceClass {
         createdAt: room.createdAt,
         updatedAt: room.updatedAt,
       };
-
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Failed to get room';
-      logger.error('Failed to get room by ID', { 
-        error: errorMessage, 
-        roomId 
+      const errorMessage =
+        error instanceof Error ? error.message : "Failed to get room";
+      logger.error("Failed to get room by ID", {
+        error: errorMessage,
+        roomId,
       });
       return null;
     }
@@ -212,9 +223,9 @@ class RoomServiceClass {
         where: { code },
         include: {
           _count: {
-            select: { players: true }
-          }
-        }
+            select: { players: true },
+          },
+        },
       });
 
       if (!room) {
@@ -233,12 +244,12 @@ class RoomServiceClass {
         createdAt: room.createdAt,
         updatedAt: room.updatedAt,
       };
-
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Failed to get room';
-      logger.error('Failed to get room by code', { 
-        error: errorMessage, 
-        code 
+      const errorMessage =
+        error instanceof Error ? error.message : "Failed to get room";
+      logger.error("Failed to get room by code", {
+        error: errorMessage,
+        code,
       });
       return null;
     }
@@ -256,15 +267,15 @@ class RoomServiceClass {
         },
         include: {
           _count: {
-            select: { players: true }
-          }
+            select: { players: true },
+          },
         },
         orderBy: {
-          createdAt: 'desc'
-        }
+          createdAt: "desc",
+        },
       });
 
-      return rooms.map(room => ({
+      return rooms.map((room) => ({
         id: room.id,
         code: room.code,
         name: room.name,
@@ -276,11 +287,11 @@ class RoomServiceClass {
         createdAt: room.createdAt,
         updatedAt: room.updatedAt,
       }));
-
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Failed to get public rooms';
-      logger.error('Failed to get public rooms', { 
-        error: errorMessage 
+      const errorMessage =
+        error instanceof Error ? error.message : "Failed to get public rooms";
+      logger.error("Failed to get public rooms", {
+        error: errorMessage,
       });
       return [];
     }
@@ -301,14 +312,14 @@ class RoomServiceClass {
                   id: true,
                   username: true,
                   avatar: true,
-                }
-              }
-            }
+                },
+              },
+            },
           },
           _count: {
-            select: { players: true }
-          }
-        }
+            select: { players: true },
+          },
+        },
       });
 
       if (!room) {
@@ -326,7 +337,7 @@ class RoomServiceClass {
         playerCount: room._count.players,
         createdAt: room.createdAt,
         updatedAt: room.updatedAt,
-        players: room.players.map(player => ({
+        players: room.players.map((player) => ({
           id: player.id,
           userId: player.userId,
           isHost: player.isHost,
@@ -335,15 +346,17 @@ class RoomServiceClass {
             id: player.user.id,
             username: player.user.username,
             avatar: player.user.avatar,
-          }
-        }))
+          },
+        })),
       };
-
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Failed to get room with players';
-      logger.error('Failed to get room with players', { 
-        error: errorMessage, 
-        roomId 
+      const errorMessage =
+        error instanceof Error
+          ? error.message
+          : "Failed to get room with players";
+      logger.error("Failed to get room with players", {
+        error: errorMessage,
+        roomId,
       });
       return null;
     }
@@ -352,12 +365,15 @@ class RoomServiceClass {
   /**
    * Update room settings
    */
-  async updateRoom(roomId: string, updates: Partial<{
-    name: string;
-    maxPlayers: number;
-    themeMode: boolean;
-    isPublic: boolean;
-  }>): Promise<RoomWithPlayerCount> {
+  async updateRoom(
+    roomId: string,
+    updates: Partial<{
+      name: string;
+      maxPlayers: number;
+      themeMode: boolean;
+      isPublic: boolean;
+    }>
+  ): Promise<RoomWithPlayerCount> {
     try {
       const updatedRoom = await prisma.room.update({
         where: { id: roomId },
@@ -368,12 +384,12 @@ class RoomServiceClass {
         },
         include: {
           _count: {
-            select: { players: true }
-          }
-        }
+            select: { players: true },
+          },
+        },
       });
 
-      logger.info('Room updated', {
+      logger.info("Room updated", {
         roomId,
         updates,
       });
@@ -390,16 +406,16 @@ class RoomServiceClass {
         createdAt: updatedRoom.createdAt,
         updatedAt: updatedRoom.updatedAt,
       };
-
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Room update failed';
-      logger.error('Failed to update room', { 
-        error: errorMessage, 
-        roomId, 
-        updates 
+      const errorMessage =
+        error instanceof Error ? error.message : "Room update failed";
+      logger.error("Failed to update room", {
+        error: errorMessage,
+        roomId,
+        updates,
       });
       throw new AppError(
-        'Room not found',
+        "Room not found",
         HTTP_STATUS.NOT_FOUND,
         ERROR_CODES.ROOM_NOT_FOUND
       );
@@ -409,55 +425,90 @@ class RoomServiceClass {
   /**
    * Delete room
    */
-  async deleteRoom(roomId: string): Promise<void> {
-    try {
-      await prisma.room.delete({
-        where: { id: roomId }
-      });
-
-      logger.info('Room deleted', { roomId });
-
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Room deletion failed';
-      logger.error('Failed to delete room', { 
-        error: errorMessage, 
-        roomId 
-      });
-      throw new AppError(
-        'Room not found',
-        HTTP_STATUS.NOT_FOUND,
-        ERROR_CODES.ROOM_NOT_FOUND
-      );
-    }
-  }
+  // Add this method to your existing RoomService class
 
   /**
-   * Clean up inactive rooms (rooms with no players)
+   * ✅ NEW: Delete a room and all associated data
    */
-  async cleanupInactiveRooms(): Promise<void> {
-    try {
-      const result = await prisma.room.deleteMany({
-        where: {
-          players: {
-            none: {}
-          },
-          createdAt: {
-            lt: new Date(Date.now() - 24 * 60 * 60 * 1000) // Older than 24 hours
-          }
-        }
-      });
+  // Add these methods to your existing RoomService class:
 
-      logger.info('Cleaned up inactive rooms', {
-        deletedCount: result.count
+/**
+ * Delete a room and all associated data
+ */
+async deleteRoom(roomId: string): Promise<void> {
+  try {
+    console.log(`🗑️ Deleting room: ${roomId}`);
+    
+    await prisma.$transaction(async (tx) => {
+      // Delete all players first (foreign key constraints)
+      const deletedPlayers = await tx.player.deleteMany({
+        where: { roomId }
       });
+      console.log(`🧹 Deleted ${deletedPlayers.count} players from room ${roomId}`);
+      
+      // Delete any games
+      const deletedGames = await tx.game.deleteMany({
+        where: { roomId }
+      });
+      console.log(`🎮 Deleted ${deletedGames.count} games from room ${roomId}`);
+      
+      // Delete the room
+      const deletedRoom = await tx.room.delete({
+        where: { id: roomId }
+      });
+      console.log(`🏠 Deleted room: ${deletedRoom.code}`);
+    });
 
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Room cleanup failed';
-      logger.error('Failed to cleanup inactive rooms', { 
-        error: errorMessage 
-      });
-    }
+    logger.info('Room deleted successfully', { roomId });
+
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Failed to delete room';
+    logger.error('Failed to delete room', { error: errorMessage, roomId });
+    console.error(`❌ Failed to delete room ${roomId}:`, error);
   }
+}
+
+/**
+ * Clean up inactive rooms
+ */
+async cleanupInactiveRooms(maxInactiveMinutes: number = 60): Promise<number> {
+  try {
+    const cutoffTime = new Date(Date.now() - maxInactiveMinutes * 60 * 1000);
+    
+    const inactiveRooms = await prisma.room.findMany({
+      where: {
+        OR: [
+          { players: { none: {} } },
+          {
+            AND: [
+              { players: { none: { isOnline: true } } },
+              { updatedAt: { lt: cutoffTime } }
+            ]
+          }
+        ]
+      },
+      select: { id: true, code: true, name: true }
+    });
+
+    console.log(`🧹 Found ${inactiveRooms.length} inactive rooms to clean up`);
+
+    for (const room of inactiveRooms) {
+      await this.deleteRoom(room.id);
+    }
+
+    logger.info('Inactive rooms cleanup completed', {
+      cleanedUp: inactiveRooms.length,
+      cutoffTime,
+    });
+
+    return inactiveRooms.length;
+
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Cleanup failed';
+    logger.error('Failed to cleanup inactive rooms', { error: errorMessage });
+    return 0;
+  }
+}
 
   /**
    * Mark room as inactive
@@ -466,19 +517,19 @@ class RoomServiceClass {
     try {
       await prisma.room.update({
         where: { id: roomId },
-        data: { 
+        data: {
           isActive: false,
-          updatedAt: new Date()
-        }
+          updatedAt: new Date(),
+        },
       });
 
-      logger.info('Room deactivated', { roomId });
-
+      logger.info("Room deactivated", { roomId });
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Room deactivation failed';
-      logger.error('Failed to deactivate room', { 
-        error: errorMessage, 
-        roomId 
+      const errorMessage =
+        error instanceof Error ? error.message : "Room deactivation failed";
+      logger.error("Failed to deactivate room", {
+        error: errorMessage,
+        roomId,
       });
     }
   }
@@ -493,25 +544,25 @@ class RoomServiceClass {
   }> {
     try {
       const room = await this.getRoomByCode(roomCode);
-      
+
       if (!room) {
         return {
           success: false,
-          message: 'Room not found',
+          message: "Room not found",
         };
       }
 
       if (!room.isActive) {
         return {
           success: false,
-          message: 'Room is not active',
+          message: "Room is not active",
         };
       }
 
       if (room.playerCount >= room.maxPlayers) {
         return {
           success: false,
-          message: 'Room is full',
+          message: "Room is full",
         };
       }
 
@@ -519,16 +570,16 @@ class RoomServiceClass {
         success: true,
         room,
       };
-
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Failed to check room';
-      logger.error('Failed to check if can join room', { 
-        error: errorMessage, 
-        roomCode 
+      const errorMessage =
+        error instanceof Error ? error.message : "Failed to check room";
+      logger.error("Failed to check if can join room", {
+        error: errorMessage,
+        roomCode,
       });
       return {
         success: false,
-        message: 'Failed to check room status',
+        message: "Failed to check room status",
       };
     }
   }
@@ -543,12 +594,13 @@ class RoomServiceClass {
     totalPlayers: number;
   }> {
     try {
-      const [totalRooms, activeRooms, publicRooms, totalPlayers] = await Promise.all([
-        prisma.room.count(),
-        prisma.room.count({ where: { isActive: true } }),
-        prisma.room.count({ where: { isPublic: true, isActive: true } }),
-        prisma.player.count({ where: { isOnline: true } })
-      ]);
+      const [totalRooms, activeRooms, publicRooms, totalPlayers] =
+        await Promise.all([
+          prisma.room.count(),
+          prisma.room.count({ where: { isActive: true } }),
+          prisma.room.count({ where: { isPublic: true, isActive: true } }),
+          prisma.player.count({ where: { isOnline: true } }),
+        ]);
 
       return {
         totalRooms,
@@ -556,11 +608,11 @@ class RoomServiceClass {
         publicRooms,
         totalPlayers,
       };
-
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Failed to get room stats';
-      logger.error('Failed to get room statistics', { 
-        error: errorMessage 
+      const errorMessage =
+        error instanceof Error ? error.message : "Failed to get room stats";
+      logger.error("Failed to get room statistics", {
+        error: errorMessage,
       });
       return {
         totalRooms: 0,

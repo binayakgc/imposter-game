@@ -1,5 +1,5 @@
 // server/src/routes/rooms.ts
-// COMPLETE FIXED VERSION - Resolves all room route errors
+// FIXED VERSION - Handles both room IDs and room codes
 
 import { Router, Request, Response } from 'express';
 import { RoomService } from '../services/RoomService';
@@ -32,6 +32,14 @@ const updateRoomSchema = Joi.object({
 });
 
 /**
+ * Helper function to determine if a string is a UUID or room code
+ */
+function isUUID(str: string): boolean {
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  return uuidRegex.test(str);
+}
+
+/**
  * Create a new room
  */
 router.post('/', authenticate, async (req: Request, res: Response) => {
@@ -47,9 +55,8 @@ router.post('/', authenticate, async (req: Request, res: Response) => {
 
     const { name, isPublic, maxPlayers, themeMode } = value;
 
-    // ✅ FIXED: Use hostUserId instead of hostName
     const room = await RoomService.createRoom({
-      hostUserId: req.user!.id,  // ✅ FIXED: Use authenticated user's ID
+      hostUserId: req.user!.id,
       name,
       isPublic,
       maxPlayers,
@@ -116,13 +123,26 @@ router.get('/public', async (req: Request, res: Response) => {
 });
 
 /**
- * Get room by ID with players
+ * ✅ FIXED: Get room by ID OR CODE with players
+ * This route now handles both room IDs (UUIDs) and room codes (6-char strings)
  */
-router.get('/:roomId', optionalAuth, async (req: Request, res: Response) => {
+router.get('/:roomIdOrCode', optionalAuth, async (req: Request, res: Response) => {
   try {
-    const { roomId } = req.params;
+    const { roomIdOrCode } = req.params;
+    let room;
 
-    const room = await RoomService.getRoomWithPlayers(roomId);
+    // ✅ FIXED: Determine if parameter is UUID (room ID) or room code
+    if (isUUID(roomIdOrCode)) {
+      // It's a room ID (UUID)
+      room = await RoomService.getRoomWithPlayers(roomIdOrCode);
+    } else {
+      // It's a room code (6-character string)
+      const roomByCode = await RoomService.getRoomByCode(roomIdOrCode.toUpperCase());
+      if (roomByCode) {
+        room = await RoomService.getRoomWithPlayers(roomByCode.id);
+      }
+    }
+
     if (!room) {
       throw new AppError(
         'Room not found',
@@ -131,11 +151,11 @@ router.get('/:roomId', optionalAuth, async (req: Request, res: Response) => {
       );
     }
 
-    // ✅ FIXED: Access username through user relationship
+    // Map players to include usernames
     const playersWithUsernames = room.players.map(player => ({
       id: player.id,
       userId: player.userId,
-      username: player.user.username,  // ✅ FIXED: Use user.username
+      username: player.user.username,
       avatar: player.user.avatar,
       isHost: player.isHost,
       isOnline: player.isOnline,
@@ -147,6 +167,7 @@ router.get('/:roomId', optionalAuth, async (req: Request, res: Response) => {
         ...room,
         players: playersWithUsernames,
       },
+      players: playersWithUsernames, // ✅ ADDED: Also include players at top level for compatibility
     });
 
   } catch (error) {
@@ -159,7 +180,7 @@ router.get('/:roomId', optionalAuth, async (req: Request, res: Response) => {
     } else {
       logger.error('Failed to get room', { 
         error: error instanceof Error ? error.message : 'Unknown error',
-        roomId: req.params.roomId,
+        roomIdOrCode: req.params.roomIdOrCode,
       });
       res.status(500).json({
         success: false,
@@ -186,7 +207,7 @@ router.post('/join', authenticate, async (req: Request, res: Response) => {
 
     const { roomCode } = value;
 
-    // ✅ FIXED: Check if room exists and is joinable
+    // Check if room exists and is joinable
     const room = await RoomService.getRoomByCode(roomCode.toUpperCase());
     if (!room) {
       throw new AppError(
@@ -204,9 +225,9 @@ router.post('/join', authenticate, async (req: Request, res: Response) => {
       );
     }
 
-    // ✅ FIXED: Use userId instead of name
+    // Add player to room
     const player = await PlayerService.addPlayer({
-      userId: req.user!.id,  // ✅ FIXED: Use authenticated user's ID
+      userId: req.user!.id,
       roomId: room.id,
       isHost: false,
     });
@@ -214,17 +235,17 @@ router.post('/join', authenticate, async (req: Request, res: Response) => {
     logger.info('Player joined room', {
       playerId: player.id,
       userId: player.userId,
-      username: player.user.username,  // ✅ FIXED: Access through user relationship
+      username: player.user.username,
       roomId: room.id,
       roomCode: room.code,
     });
 
-    // ✅ FIXED: Get updated room data
+    // Get updated room data
     const updatedRoom = await RoomService.getRoomWithPlayers(room.id);
     const playersWithUsernames = updatedRoom!.players.map(p => ({
       id: p.id,
       userId: p.userId,
-      username: p.user.username,  // ✅ FIXED: Use user.username
+      username: p.user.username,
       avatar: p.user.avatar,
       isHost: p.isHost,
       isOnline: p.isOnline,
@@ -240,7 +261,7 @@ router.post('/join', authenticate, async (req: Request, res: Response) => {
       player: {
         id: player.id,
         userId: player.userId,
-        username: player.user.username,  // ✅ FIXED: Use user.username
+        username: player.user.username,
         avatar: player.user.avatar,
         isHost: player.isHost,
         isOnline: player.isOnline,
@@ -297,7 +318,6 @@ router.put('/:roomId', authenticate, async (req: Request, res: Response) => {
       );
     }
 
-    // ✅ FIXED: Remove isActive from updates (not allowed in interface)
     const updatedRoom = await RoomService.updateRoom(roomId, {
       name,
       maxPlayers,
@@ -348,11 +368,11 @@ router.get('/:roomId/players', optionalAuth, async (req: Request, res: Response)
 
     const players = await PlayerService.getPlayersInRoom(roomId);
 
-    // ✅ FIXED: Map players to include usernames
+    // Map players to include usernames
     const playersWithUsernames = players.map(player => ({
       id: player.id,
       userId: player.userId,
-      username: player.user.username,  // ✅ FIXED: Use user.username
+      username: player.user.username,
       avatar: player.user.avatar,
       isHost: player.isHost,
       isOnline: player.isOnline,
@@ -379,79 +399,6 @@ router.get('/:roomId/players', optionalAuth, async (req: Request, res: Response)
 });
 
 /**
- * Leave room
- */
-router.post('/:roomId/leave', authenticate, async (req: Request, res: Response) => {
-  try {
-    const { roomId } = req.params;
-
-    // Get player before removing
-    const player = await PlayerService.getPlayerByUserAndRoom(req.user!.id, roomId);
-    if (!player) {
-      throw new AppError(
-        'Player not found in room',
-        404,
-        'PLAYER_NOT_FOUND'
-      );
-    }
-
-    // ✅ FIXED: Handle the fact that removePlayer returns void
-    await PlayerService.removePlayer(player.id);
-
-    // If the player was the host, we need to handle host transfer separately
-    let newHost = null;
-    if (player.isHost) {
-      const remainingPlayers = await PlayerService.getOnlinePlayersInRoom(roomId);
-      if (remainingPlayers.length > 0) {
-        // Transfer host to first remaining player
-        await PlayerService.transferHost(player.id, remainingPlayers[0].id);
-        newHost = {
-          id: remainingPlayers[0].id,
-          username: remainingPlayers[0].user.username,  // ✅ FIXED: Use user.username
-        };
-      }
-    }
-
-    logger.info('Player left room', {
-      playerId: player.id,
-      userId: player.userId,
-      username: player.user.username,  // ✅ FIXED: Use user.username
-      roomId,
-      wasHost: player.isHost,
-      newHostId: newHost?.id,
-    });
-
-    res.json({
-      success: true,
-      message: 'Left room successfully',
-      playerName: player.user.username,  // ✅ FIXED: Use user.username
-      wasHost: player.isHost,
-      newHost,
-    });
-
-  } catch (error) {
-    if (error instanceof AppError) {
-      res.status(error.statusCode).json({
-        success: false,
-        error: error.message,
-        code: error.errorCode,
-      });
-    } else {
-      logger.error('Failed to leave room', { 
-        error: error instanceof Error ? error.message : 'Unknown error',
-        roomId: req.params.roomId,
-        userId: req.user?.id,
-      });
-      res.status(500).json({
-        success: false,
-        error: 'Failed to leave room',
-        code: 'LEAVE_ROOM_ERROR',
-      });
-    }
-  }
-});
-
-/**
  * Delete room (host only)
  */
 router.delete('/:roomId', authenticate, async (req: Request, res: Response) => {
@@ -473,7 +420,6 @@ router.delete('/:roomId', authenticate, async (req: Request, res: Response) => {
     logger.info('Room deleted', {
       roomId,
       hostId: req.user!.id,
-      hostUsername: req.user!.username,
     });
 
     res.json({
@@ -502,7 +448,5 @@ router.delete('/:roomId', authenticate, async (req: Request, res: Response) => {
     }
   }
 });
-
-
 
 export default router;

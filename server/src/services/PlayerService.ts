@@ -37,7 +37,7 @@ export interface CreatePlayerParams {
 }
 
 export interface UpdatePlayerParams {
-  socketId?: string;
+  socketId?: string | null;
   isOnline?: boolean;
   lastSeen?: Date;
 }
@@ -194,6 +194,49 @@ class PlayerServiceClass {
       );
     }
   }
+
+  // Add this method to your existing PlayerService class
+
+/**
+ * ✅ NEW: Get online player by user ID (for reconnection)
+ */
+async getOnlinePlayerByUserId(userId: string): Promise<PlayerWithRoom | null> {
+  try {
+    const player = await prisma.player.findFirst({
+      where: {
+        userId: userId,
+        isOnline: true,
+      },
+      include: {
+        user: {
+          select: {
+            id: true,
+            username: true,
+            avatar: true,
+          }
+        },
+        room: {
+          select: {
+            id: true,
+            code: true,
+            name: true,
+            isPublic: true,
+            maxPlayers: true,
+            themeMode: true,
+          }
+        }
+      }
+    });
+
+    return player;
+  } catch (error) {
+    logger.error('Failed to get online player by user ID', { 
+      error: error instanceof Error ? error.message : 'Unknown error', 
+      userId 
+    });
+    return null;
+  }
+}
 
   /**
    * Get all players in a room

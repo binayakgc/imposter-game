@@ -1,12 +1,10 @@
 // client/src/services/socket.ts
-// COMPLETE FIXED VERSION - Resolves all emit method signature issues
+// ENHANCED VERSION - Better reconnection and authentication
 
-import io from 'socket.io-client';
+import io, { Socket } from 'socket.io-client';
+import authService from './authService';
 
-// Define Socket type manually to avoid import issues
-type SocketInstance = typeof io extends (...args: any[]) => infer R ? R : any;
-
-// Basic types for the client (updated to match User auth schema)
+// Types
 interface Room {
   id: string;
   code: string;
@@ -23,373 +21,383 @@ interface Room {
 interface Player {
   id: string;
   userId: string;
-  isHost: boolean;
-  isOnline: boolean;
-  joinedAt: string;
-  user: {
+  username?: string;
+  name?: string;
+  user?: {
     id: string;
     username: string;
     avatar?: string | null;
   };
+  avatar?: string | null;
+  isHost: boolean;
+  isOnline: boolean;
+  joinedAt?: string;
 }
-
-interface GamePlayer extends Player {
-  isWordGiver?: boolean;
-  isImposter?: boolean;
-  hasVoted?: boolean;
-}
-
-interface Game {
-  id: string;
-  state: string;
-  roundNumber: number;
-  wordGiverId?: string;
-}
-
-interface GameResults {
-  winner: 'players' | 'imposter';
-  correctWord?: string;
-  imposterId: string;
-  votes: Record<string, string>;
-}
-
-// Socket event handlers type - COMPLETE FIXED VERSION
-type SocketEventHandlers = {
-  // Connection events
-  connected: (data: { playerId: string; room: Room }) => void;
-  disconnected: (data: { playerId: string }) => void;
-  
-  // Room events
-  room_joined: (data: { success: boolean; room: Room; player: Player; players: Player[] }) => void;
-  room_updated: (data: { room: Room; players: Player[] }) => void;
-  player_joined: (data: { player: Player; room: Room }) => void;
-  player_left: (data: { playerId: string; playerName: string; reason: string }) => void;
-  room_left: (data: { success: boolean; message: string }) => void;
-  host_changed: (data: { newHost: { id: string; name: string }; message: string }) => void;
-  public_rooms_updated: () => void;
-  public_rooms: (data: { success: boolean; rooms: Room[] }) => void;
-  room_details: (data: { success: boolean; room: Room; players: Player[]; currentGame?: Game }) => void;
-  
-  // Game events
-  game_started: (data: { game: Game; players: GamePlayer[] }) => void;
-  game_state_changed: (data: { gameState: string; currentWord?: string; wordGiverId?: string }) => void;
-  word_revealed: (data: { word: string; isImposter: boolean; gameState: string }) => void;
-  word_submitted: (data: { wordGiverId: string; gameState: string }) => void;
-  voting_started: (data: { gameState: string; timeLimit: number; players: Player[] }) => void;
-  vote_submitted: (data: { playerId: string; hasVoted: boolean; totalVotes: number; totalPlayers: number }) => void;
-  game_ended: (data: { results: GameResults; gameState: string }) => void;
-  next_round_started: (data: { gameState: string; roundNumber: number; wordGiverId: string }) => void;
-  game_completed: (data: { gameState: string; message: string }) => void;
-  role_assigned: (data: { isWordGiver?: boolean; isImposter?: boolean }) => void;
-  
-  // General events
-  error: (data: { message: string; code?: string }) => void;
-  success: (data: { message: string }) => void;
-};
 
 class SocketService {
-  private socket: SocketInstance | null = null;
-  private eventHandlers: Map<string, Function[]> = new Map();
+  private socket: Socket | null = null;
+  private serverUrl: string = '';
   private reconnectAttempts = 0;
   private maxReconnectAttempts = 5;
+  private reconnectInterval = 2000; // Start with 2 seconds
+  private isManuallyDisconnected = false;
+  private currentRoomId: string | null = null;
+  private connectionListeners: Array<(connected: boolean) => void> = [];
 
   /**
-   * Connect to the Socket.io server
+   * ✅ ENHANCED: Connect with authentication and better error handling
    */
-  connect(serverUrl: string = 'http://localhost:3001', token?: string): void {
-    console.log('🔌 Connecting to Socket.io server at:', serverUrl);
-    
-    this.socket = io(serverUrl, {
-      transports: ['websocket', 'polling'],
-      upgrade: true,
-      rememberUpgrade: true,
-      timeout: 10000,
-      autoConnect: true,
-      reconnection: true,
-      reconnectionAttempts: this.maxReconnectAttempts,
-      reconnectionDelay: 2000,
-      query: token ? { token } : undefined,
-    });
+  async connect(serverUrl: string): Promise<void> {
+    try {
+      this.serverUrl = serverUrl;
+      this.isManuallyDisconnected = false;
 
-    this.setupConnectionEvents();
+      console.log('🔌 Connecting to socket server:', serverUrl);
+
+      // Get authentication token
+      const token = authService.getToken();
+      const user = authService.getCurrentUser();
+
+      // ✅ ENHANCED: Include auth token in connection
+      this.socket = io(serverUrl, {
+        auth: {
+          token: token,
+          userId: user?.id,
+          username: user?.username,
+        },
+        query: {
+          token: token,
+        },
+        reconnection: true,
+        reconnectionAttempts: this.maxReconnectAttempts,
+        reconnectionDelay: this.reconnectInterval,
+        reconnectionDelayMax: 10000,
+        timeout: 10000,
+        forceNew: false, // ✅ Allow reusing existing connection
+      });
+
+      this.setupSocketListeners();
+      this.setupReconnectionLogic();
+
+      // Wait for connection
+      await new Promise<void>((resolve, reject) => {
+        const timeoutId = setTimeout(() => {
+          reject(new Error('Connection timeout'));
+        }, 10000);
+
+        this.socket!.on('connect', () => {
+          clearTimeout(timeoutId);
+          console.log('✅ Socket connected:', this.socket!.id);
+          this.reconnectAttempts = 0;
+          this.notifyConnectionListeners(true);
+          resolve();
+        });
+
+        this.socket!.on('connect_error', (error) => {
+          clearTimeout(timeoutId);
+          console.error('❌ Socket connection error:', error);
+          reject(error);
+        });
+      });
+
+    } catch (error) {
+      console.error('❌ Failed to connect socket:', error);
+      throw error;
+    }
   }
 
   /**
-   * Setup connection event handlers
+   * ✅ ENHANCED: Setup socket listeners with better error handling
    */
-  private setupConnectionEvents(): void {
+  private setupSocketListeners(): void {
     if (!this.socket) return;
 
+    // Connection events
     this.socket.on('connect', () => {
-      console.log('✅ Socket connected successfully');
-      console.log('🔗 Socket ID:', this.socket?.id);
+      console.log('✅ Socket connected:', this.socket!.id);
       this.reconnectAttempts = 0;
-      this.reregisterEventHandlers();
+      this.notifyConnectionListeners(true);
+      
+      // ✅ ENHANCED: Auto-rejoin room if we were in one
+      if (this.currentRoomId) {
+        console.log('🔄 Auto-rejoining room after reconnection:', this.currentRoomId);
+        this.rejoinCurrentRoom();
+      }
     });
 
     this.socket.on('disconnect', (reason) => {
       console.log('❌ Socket disconnected:', reason);
-    });
-
-    this.socket.on('connect_error', (error) => {
-      console.error('🔥 Socket connection error:', error);
-      this.reconnectAttempts++;
+      this.notifyConnectionListeners(false);
       
-      if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-        console.error('💀 Max reconnection attempts reached');
+      // ✅ ENHANCED: Only attempt reconnection if not manually disconnected
+      if (!this.isManuallyDisconnected && reason !== 'io client disconnect') {
+        console.log('🔄 Will attempt to reconnect...');
       }
     });
 
     this.socket.on('reconnect', (attemptNumber) => {
-      console.log(`🔄 Socket reconnected after ${attemptNumber} attempts`);
+      console.log(`✅ Socket reconnected after ${attemptNumber} attempts`);
       this.reconnectAttempts = 0;
+      this.notifyConnectionListeners(true);
+    });
+
+    this.socket.on('reconnect_attempt', (attemptNumber) => {
+      console.log(`🔄 Reconnection attempt ${attemptNumber}/${this.maxReconnectAttempts}`);
     });
 
     this.socket.on('reconnect_error', (error) => {
-      console.error('🔄 Socket reconnection error:', error);
+      console.error('❌ Reconnection error:', error);
+    });
+
+    this.socket.on('reconnect_failed', () => {
+      console.error('❌ Max reconnection attempts reached');
+      this.notifyConnectionListeners(false);
+    });
+
+    // ✅ ENHANCED: Handle authentication events
+    this.socket.on('authenticated', (data) => {
+      console.log('🔐 Socket authenticated:', data);
+    });
+
+    this.socket.on('authentication_error', (error) => {
+      console.error('🔐 Socket authentication error:', error);
+      // Try to re-authenticate
+      this.authenticateSocket();
+    });
+
+    // Room events - emit to notify components
+    this.socket.on('room_joined', (data) => {
+      console.log('🚪 Room joined:', data);
+      if (data.room) {
+        this.currentRoomId = data.room.id;
+      }
+    });
+
+    this.socket.on('room_left', (data) => {
+      console.log('🚪 Room left:', data);
+      this.currentRoomId = null;
+    });
+
+    // ✅ ENHANCED: Handle public rooms updates
+    this.socket.on('public_rooms_updated', (data) => {
+      console.log('📡 Public rooms updated');
+      // Re-emit for components to catch
+      this.socket?.emit('public_rooms_updated', data);
+    });
+
+    // Error handling
+    this.socket.on('error', (error) => {
+      console.error('🚨 Socket error:', error);
     });
   }
 
   /**
-   * Re-register all event handlers after reconnection
+   * ✅ NEW: Auto-rejoin room after reconnection
    */
-  private reregisterEventHandlers(): void {
+  private async rejoinCurrentRoom(): Promise<void> {
+    if (!this.currentRoomId || !this.socket) return;
+
+    try {
+      const user = authService.getCurrentUser();
+      if (!user) {
+        console.log('❌ No user found for room rejoin');
+        this.currentRoomId = null;
+        return;
+      }
+
+      console.log('🔄 Attempting to rejoin room:', this.currentRoomId);
+      
+      // Try to get room details first
+      this.socket.emit('get_room_details', { roomId: this.currentRoomId });
+      
+    } catch (error) {
+      console.error('❌ Failed to rejoin room:', error);
+      this.currentRoomId = null;
+    }
+  }
+
+  /**
+   * ✅ NEW: Authenticate socket with current user
+   */
+  private authenticateSocket(): void {
     if (!this.socket) return;
 
-    for (const [event, handlers] of this.eventHandlers.entries()) {
-      handlers.forEach(handler => {
-        this.socket!.on(event, (data: any) => {
-          console.log(`📥 Received event '${event}':`, data);
-          handler(data);
-        });
+    const token = authService.getToken();
+    const user = authService.getCurrentUser();
+
+    if (token && user) {
+      console.log('🔐 Authenticating socket...');
+      this.socket.emit('authenticate', {
+        token,
+        userId: user.id,
+        username: user.username,
       });
     }
   }
 
   /**
-   * Disconnect from the server
+   * ✅ ENHANCED: Setup reconnection logic
+   */
+  private setupReconnectionLogic(): void {
+    if (!this.socket) return;
+
+    // Handle page visibility changes
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden && this.socket && !this.socket.connected) {
+        console.log('🔄 Page became visible, checking connection...');
+        if (!this.isManuallyDisconnected) {
+          this.socket.connect();
+        }
+      }
+    });
+
+    // Handle online/offline events
+    window.addEventListener('online', () => {
+      console.log('🌐 Internet connection restored');
+      if (this.socket && !this.socket.connected && !this.isManuallyDisconnected) {
+        this.socket.connect();
+      }
+    });
+
+    window.addEventListener('offline', () => {
+      console.log('🌐 Internet connection lost');
+    });
+  }
+
+  /**
+   * Disconnect from server
    */
   disconnect(): void {
+    console.log('🔌 Manually disconnecting socket...');
+    this.isManuallyDisconnected = true;
+    this.currentRoomId = null;
+    
     if (this.socket) {
-      console.log('🔌 Disconnecting from Socket.io server');
       this.socket.disconnect();
+      this.socket.removeAllListeners();
       this.socket = null;
     }
-    this.eventHandlers.clear();
+    
+    this.notifyConnectionListeners(false);
   }
 
   /**
    * Check if socket is connected
    */
   isConnected(): boolean {
-    return this.socket?.connected || false;
+    return !!this.socket?.connected;
   }
 
   /**
-   * Get detailed connection information
-   */
-  getDetailedConnectionInfo(): object {
-    return {
-      connected: this.isConnected(),
-      socketId: this.socket?.id || null,
-      reconnectAttempts: this.reconnectAttempts,
-      hasSocket: !!this.socket,
-      eventHandlersCount: this.eventHandlers.size,
-    };
-  }
-
-  /**
-   * Emit an event to the server
+   * ✅ ENHANCED: Emit event with authentication check
    */
   emit(event: string, data?: any): void {
-    if (this.socket && this.socket.connected) {
-      console.log(`📤 Emitting event '${event}':`, data);
-      // ✅ FIXED: Handle both cases - with and without data
-      if (data !== undefined) {
-        this.socket.emit(event, data);
-      } else {
-        this.socket.emit(event);  // ✅ FIXED: Emit without data parameter
-      }
-    } else {
-      console.warn(`⚠️ Cannot emit event '${event}': Socket not connected`);
-      console.log('🔍 Current connection status:', this.getDetailedConnectionInfo());
+    if (!this.socket) {
+      console.warn('⚠️ Socket not connected, cannot emit:', event);
+      return;
     }
+
+    if (!this.socket.connected) {
+      console.warn('⚠️ Socket not connected, attempting to reconnect...');
+      if (!this.isManuallyDisconnected) {
+        this.socket.connect();
+      }
+      return;
+    }
+
+    // ✅ ENHANCED: Add authentication data to relevant events
+    const user = authService.getCurrentUser();
+    if (user && (event === 'join_room' || event === 'create_room' || event === 'leave_room')) {
+      data = {
+        ...data,
+        userId: user.id,
+        username: user.username,
+      };
+    }
+
+    console.log(`📤 Emitting event: ${event}`, data);
+    this.socket.emit(event, data);
   }
 
   /**
-   * Listen for an event from the server - FIXED TypeScript typing
+   * Listen for events
    */
-  on<K extends keyof SocketEventHandlers>(
-    event: K, 
-    handler: SocketEventHandlers[K]
-  ): void {
-    console.log(`👂 Setting up listener for event: '${event}'`);
-    
-    if (!this.eventHandlers.has(event as string)) {
-      this.eventHandlers.set(event as string, []);
+  on(event: string, callback: (...args: any[]) => void): void {
+    if (!this.socket) {
+      console.warn('⚠️ Socket not connected, cannot listen for:', event);
+      return;
     }
-    
-    this.eventHandlers.get(event as string)!.push(handler as Function);
 
-    // Also register with socket if connected
-    if (this.socket) {
-      this.socket.on(event as string, (data: any) => {
-        console.log(`📥 Received event '${event}':`, data);
-        (handler as Function)(data);
-      });
-    }
+    this.socket.on(event, callback);
   }
 
   /**
    * Remove event listener
    */
-  off(event: string, handler?: Function): void {
-    if (this.socket) {
-      if (handler) {
-        this.socket.off(event, handler as any);
-      } else {
-        this.socket.off(event);
-      }
-    }
+  off(event: string, callback?: (...args: any[]) => void): void {
+    if (!this.socket) return;
 
-    if (handler) {
-      const handlers = this.eventHandlers.get(event);
-      if (handlers) {
-        const index = handlers.indexOf(handler);
-        if (index > -1) {
-          handlers.splice(index, 1);
-        }
-      }
+    if (callback) {
+      this.socket.off(event, callback);
     } else {
-      this.eventHandlers.delete(event);
+      this.socket.removeAllListeners(event);
     }
   }
 
-  // ✅ FIXED: Room management methods with proper data handling
-  createRoom(roomData: { 
-    name?: string; 
-    isPublic?: boolean; 
-    maxPlayers?: number; 
-    themeMode?: boolean;
-  }): void {
-    this.emit('create_room', roomData);
+  /**
+   * ✅ NEW: Subscribe to connection status changes
+   */
+  onConnectionChange(callback: (connected: boolean) => void): () => void {
+    this.connectionListeners.push(callback);
+    
+    // Immediately call with current status
+    callback(this.isConnected());
+    
+    // Return unsubscribe function
+    return () => {
+      this.connectionListeners = this.connectionListeners.filter(cb => cb !== callback);
+    };
   }
 
-  joinRoom(roomCode: string, userId: string): void {  // ✅ FIXED: Use userId instead of playerName
-    this.emit('join_room', { roomCode, userId });
+  /**
+   * ✅ NEW: Notify connection listeners
+   */
+  private notifyConnectionListeners(connected: boolean): void {
+    this.connectionListeners.forEach(callback => {
+      try {
+        callback(connected);
+      } catch (error) {
+        console.error('Error in connection listener:', error);
+      }
+    });
   }
 
-  leaveRoom(roomId: string): void {
-    this.emit('leave_room', { roomId });
+  /**
+   * ✅ NEW: Get current room ID
+   */
+  getCurrentRoomId(): string | null {
+    return this.currentRoomId;
   }
 
-  updateRoom(roomId: string, updates: { 
-    name?: string; 
-    maxPlayers?: number; 
-    themeMode?: boolean;
-    isPublic?: boolean;
-  }): void {
-    this.emit('update_room', { roomId, ...updates });
+  /**
+   * ✅ NEW: Set current room ID
+   */
+  setCurrentRoomId(roomId: string | null): void {
+    this.currentRoomId = roomId;
   }
 
-  getPublicRooms(): void {
-    this.emit('get_public_rooms');  // ✅ FIXED: No data needed
-  }
-
-  getRoomDetails(roomId: string): void {
-    this.emit('get_room_details', { roomId });
-  }
-
-  // ✅ FIXED: Game management methods
-  startGame(roomId: string): void {
-    this.emit('start_game', { roomId });
-  }
-
-  submitWord(roomId: string, word: string): void {
-    this.emit('submit_word', { roomId, word });
-  }
-
-  submitVote(roomId: string, targetPlayerId: string): void {
-    this.emit('submit_vote', { roomId, targetPlayerId });
-  }
-
-  nextRound(roomId: string): void {
-    this.emit('next_round', { roomId });
-  }
-
-  endGame(roomId: string): void {
-    this.emit('end_game', { roomId });
-  }
-
-  // ✅ FIXED: Authentication methods
-  authenticate(token: string): void {
-    this.emit('authenticate', { token });
-  }
-
-  // ✅ FIXED: Player actions
-  setPlayerReady(roomId: string, isReady: boolean): void {
-    this.emit('player_ready', { roomId, isReady });
-  }
-
-  sendChatMessage(roomId: string, message: string): void {
-    this.emit('chat_message', { roomId, message });
-  }
-
-  // ✅ FIXED: Additional utility methods
-  ping(): void {
-    this.emit('ping');  // No data needed
-  }
-
-  requestRoomUpdate(roomId: string): void {
-    this.emit('request_room_update', { roomId });
-  }
-
-  updatePlayerStatus(roomId: string, status: 'online' | 'away' | 'busy'): void {
-    this.emit('update_player_status', { roomId, status });
-  }
-
-  // ✅ FIXED: Host-only actions
-  kickPlayer(roomId: string, playerId: string): void {
-    this.emit('kick_player', { roomId, playerId });
-  }
-
-  transferHost(roomId: string, newHostId: string): void {
-    this.emit('transfer_host', { roomId, newHostId });
-  }
-
-  changeGameSettings(roomId: string, settings: {
-    timeLimit?: number;
-    maxRounds?: number;
-    difficulty?: string;
-  }): void {
-    this.emit('change_game_settings', { roomId, ...settings });
-  }
-
-  // ✅ FIXED: Connection management
-  heartbeat(): void {
-    if (this.isConnected()) {
-      this.emit('heartbeat', { timestamp: Date.now() });
-    }
-  }
-
-  requestReconnect(): void {
-    if (this.socket && !this.socket.connected) {
-      console.log('🔄 Requesting manual reconnection...');
+  /**
+   * ✅ NEW: Force reconnection
+   */
+  forceReconnect(): void {
+    if (this.socket && !this.isManuallyDisconnected) {
+      console.log('🔄 Force reconnecting socket...');
+      this.socket.disconnect();
       this.socket.connect();
     }
-  }
-
-  // ✅ FIXED: Error recovery
-  reportError(error: string, context?: any): void {
-    this.emit('client_error', { 
-      error, 
-      context,
-      timestamp: Date.now(),
-      userAgent: navigator.userAgent
-    });
   }
 }
 
 // Export singleton instance
-export const socketService = new SocketService();
+const socketService = new SocketService();
 export default socketService;
